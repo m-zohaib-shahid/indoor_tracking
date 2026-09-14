@@ -2,33 +2,50 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Live Indoor Positioning</title>
-  <!-- React & Supabase CDNs -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Live Enterprise Indoor Tracking</title>
+  
+  <!-- CDN Dependencies -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    body, html, #root {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #030712;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    .glass-card {
+      background: rgba(17, 24, 39, 0.75);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+  </style>
 </head>
-<body style="margin:0; background-color:#090d16;">
+<body>
   <div id="root"></div>
 
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
     const { createClient } = supabase;
 
+    // Supabase Live Instance
     const SUPABASE_URL = "https://gnhkgjqiqeoraygzjikd.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImduaGtnanFpcWVvcmF5Z3pqaWtkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkzOTIxMzIsImV4cCI6MjEwNDk2ODEzMn0.AvHjI6gAQA-LnPJY99BtbDnB2ryKj7NXwkXIj7AI0Uk";
     const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-    const styles = {
-      container: { fontFamily: "-apple-system, sans-serif", backgroundColor: "#090d16", color: "#f8fafc", minHeight: "100vh", padding: "16px" },
-      card: { backgroundColor: "#111827", borderRadius: "16px", border: "1px solid #1f2937", padding: "20px", marginBottom: "20px" },
-      btnPrimary: { backgroundColor: "#0d9488", color: "#ffffff", border: "none", padding: "14px 24px", borderRadius: "10px", fontWeight: "700", cursor: "pointer", width: "100%" },
-      btnNav: { backgroundColor: "#1f2937", color: "#f8fafc", border: "1px solid #374151", padding: "10px 16px", borderRadius: "8px", fontWeight: "600", cursor: "pointer" },
-      statBox: { backgroundColor: "#1f2937", padding: "16px", borderRadius: "12px", border: "1px solid #374151" },
-      badge: { backgroundColor: "#064e3b", color: "#34d399", padding: "4px 12px", borderRadius: "9999px", fontSize: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "6px" }
-    };
 
     const BUILDING_LAYOUT = {
       corridors: [
@@ -37,10 +54,9 @@
         { id: "c3", p1: [100, 150], p2: [100, 400] },
       ],
       rooms: [
-        { name: "Room 101", bounds: { x: 40, y: 300, w: 120, h: 120 }, center: [100, 360] },
-        { name: "Room 102", bounds: { x: 250, y: 30, w: 140, h: 90 }, center: [320, 75] },
-        { name: "Room 103 (Lab)", bounds: { x: 490, y: 300, w: 120, h: 120 }, center: [550, 360] },
-        { name: "Main Hallway", bounds: { x: 150, y: 120, w: 400, h: 60 }, center: [350, 150] },
+        { name: "Room 101", bounds: { x: 30, y: 290, w: 140, h: 140 }, center: [100, 360] },
+        { name: "Executive Suite", bounds: { x: 230, y: 20, w: 180, h: 100 }, center: [320, 70] },
+        { name: "AI Tech Lab", bounds: { x: 480, y: 290, w: 140, h: 140 }, center: [550, 360] },
       ]
     };
 
@@ -56,7 +72,7 @@
         const dist = Math.hypot(point[0] - projX, point[1] - projY);
         if (dist < minDistance) { minDistance = dist; snapped = [projX, projY]; }
       });
-      let currentRoom = "Corridor Area";
+      let currentRoom = "Main Corridor";
       BUILDING_LAYOUT.rooms.forEach((room) => {
         const { x, y, w, h } = room.bounds;
         if (snapped[0] >= x && snapped[0] <= x + w && snapped[1] >= y && snapped[1] <= y + h) {
@@ -68,10 +84,10 @@
 
     function App() {
       const [deviceRole, setDeviceRole] = useState(null);
-      const [userId] = useState(`USER-${Math.floor(1000 + Math.random() * 9000)}`);
+      const [userId] = useState(`DEV-${Math.floor(1000 + Math.random() * 9000)}`);
       const [position, setPosition] = useState([100, 150]);
       const [heading, setHeading] = useState(0);
-      const [activeZone, setActiveZone] = useState("Room 101 Entrance");
+      const [activeZone, setActiveZone] = useState("Main Corridor");
       const [stepCount, setStepCount] = useState(0);
       const [peerDevices, setPeerDevices] = useState({});
       const [isConnected, setIsConnected] = useState(false);
@@ -132,7 +148,7 @@
       };
 
       const handleManualWalk = (dir) => {
-        const stepSize = 16;
+        const stepSize = 18;
         let dx = 0, dy = 0, newHeading = heading;
         if (dir === "UP") { dy = -stepSize; newHeading = 270; }
         if (dir === "DOWN") { dy = stepSize; newHeading = 90; }
@@ -145,69 +161,143 @@
       };
 
       return (
-        <div style={styles.container}>
-          <div style={{ ...styles.card, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div className="relative w-full h-full flex flex-col justify-between overflow-hidden bg-gray-950 text-white">
+          
+          {/* Header Bar */}
+          <header className="z-20 p-4 glass-card border-b border-gray-800 flex justify-between items-center shadow-2xl">
             <div>
-              <h1 style={{ margin: 0, fontSize: "20px" }}>Live Indoor Positioning System</h1>
-              <p style={{ margin: "4px 0 0 0", color: "#9ca3af", fontSize: "13px" }}>Real-Time PDR Tracking</p>
+              <h1 className="text-lg font-bold tracking-tight text-teal-400">PDR Indoor Tracker</h1>
+              <p className="text-xs text-gray-400">Node ID: <span className="text-gray-200 font-mono">{userId}</span></p>
             </div>
-            <span style={styles.badge}>
-              <span style={{ width: "8px", height: "8px", borderRadius: "50%", backgroundColor: isConnected ? "#34d399" : "#f87171", display: "inline-block" }}></span>
-              {isConnected ? "Supabase Live Connected" : "Connecting..."}
-            </span>
-          </div>
+            <div className="flex items-center gap-2 bg-gray-900/80 px-3 py-1.5 rounded-full border border-gray-700">
+              <span className={`w-2.5 h-2.5 rounded-full ${isConnected ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
+              <span className="text-xs font-semibold text-gray-300">{isConnected ? "Live Network" : "Connecting..."}</span>
+            </div>
+          </header>
 
+          {/* Device Role Selection Overlay */}
           {!deviceRole && (
-            <div style={styles.card}>
-              <h2 style={{ fontSize: "18px", marginTop: 0 }}>Select Device Mode</h2>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-                <button onClick={startHardwareSensors} style={styles.btnPrimary}>📱 Track My Device</button>
-                <button onClick={() => setDeviceRole("receiver")} style={{ ...styles.btnPrimary, backgroundColor: "#3b82f6" }}>🖥️ Monitor Other Devices</button>
+            <div className="absolute inset-0 z-30 flex items-center justify-center p-6 bg-gray-950/90 backdrop-blur-md">
+              <div className="max-w-md w-full glass-card p-6 rounded-2xl border border-gray-800 text-center shadow-2xl">
+                <div className="w-12 h-12 bg-teal-500/10 text-teal-400 rounded-xl flex items-center justify-center mx-auto mb-4 border border-teal-500/20 text-2xl">
+                  📍
+                </div>
+                <h2 className="text-xl font-bold mb-2">Select Operating Mode</h2>
+                <p className="text-sm text-gray-400 mb-6">Choose how this device should function within the indoor positioning system.</p>
+                
+                <div className="space-y-3">
+                  <button onClick={startHardwareSensors} className="w-full py-3.5 px-4 bg-teal-600 hover:bg-teal-500 text-white font-semibold rounded-xl transition-all shadow-lg active:scale-95">
+                    📱 Broadcaster (Track This Phone)
+                  </button>
+                  <button onClick={() => setDeviceRole("receiver")} className="w-full py-3.5 px-4 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 font-semibold rounded-xl transition-all active:scale-95">
+                    🖥️ Observer (Monitor Fleet)
+                  </button>
+                </div>
               </div>
             </div>
           )}
 
+          {/* Full-Screen Vector Map Container */}
+          <main className="relative flex-1 w-full h-full bg-gray-950 flex items-center justify-center overflow-hidden">
+            <svg viewBox="0 0 700 480" className="w-full h-full p-2 max-h-[85vh] object-contain">
+              <defs>
+                <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
+                  <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#1f2937" strokeWidth="0.8" />
+                </pattern>
+                <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="6" result="blur" />
+                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+              </defs>
+
+              {/* Grid Background */}
+              <rect width="100%" height="100%" fill="url(#grid)" />
+
+              {/* Corridors */}
+              <line x1="100" y1="150" x2="550" y2="150" stroke="#1f2937" strokeWidth="48" strokeLinecap="round" />
+              <line x1="550" y1="150" x2="550" y2="400" stroke="#1f2937" strokeWidth="48" strokeLinecap="round" />
+              <line x1="100" y1="150" x2="100" y2="400" stroke="#1f2937" strokeWidth="48" strokeLinecap="round" />
+
+              {/* Inner Corridor Lines */}
+              <line x1="100" y1="150" x2="550" y2="150" stroke="#374151" strokeWidth="2" strokeDasharray="6,6" />
+              <line x1="550" y1="150" x2="550" y2="400" stroke="#374151" strokeWidth="2" strokeDasharray="6,6" />
+              <line x1="100" y1="150" x2="100" y2="400" stroke="#374151" strokeWidth="2" strokeDasharray="6,6" />
+
+              {/* Rooms */}
+              {BUILDING_LAYOUT.rooms.map((room, i) => (
+                <g key={i}>
+                  <rect
+                    x={room.bounds.x}
+                    y={room.bounds.y}
+                    width={room.bounds.w}
+                    height={room.bounds.h}
+                    fill="#111827"
+                    stroke="#374151"
+                    strokeWidth="2.5"
+                    rx="12"
+                  />
+                  <text x={room.center[0]} y={room.center[1]} textAnchor="middle" fill="#9ca3af" fontSize="13" fontWeight="700">
+                    {room.name}
+                  </text>
+                </g>
+              ))}
+
+              {/* Peer Devices */}
+              {Object.values(peerDevices).map((peer) => (
+                <g key={peer.userId}>
+                  <circle cx={peer.position[0]} cy={peer.position[1]} r="16" fill="#3b82f6" opacity="0.25" />
+                  <circle cx={peer.position[0]} cy={peer.position[1]} r="8" fill="#3b82f6" />
+                  <text x={peer.position[0]} y={peer.position[1] - 20} textAnchor="middle" fill="#60a5fa" fontSize="11" fontWeight="700">
+                    {peer.userId} ({peer.room})
+                  </text>
+                </g>
+              ))}
+
+              {/* Active User Marker */}
+              <g filter="url(#glow)">
+                <circle cx={position[0]} cy={position[1]} r="22" fill="#0d9488" opacity="0.35" className="animate-ping" />
+                <circle cx={position[0]} cy={position[1]} r="10" fill="#14b8a6" stroke="#ffffff" strokeWidth="2.5" />
+                <text x={position[0]} y={position[1] - 22} textAnchor="middle" fill="#2dd4bf" fontSize="12" fontWeight="800">
+                  YOU ({activeZone})
+                </text>
+              </g>
+            </svg>
+          </main>
+
+          {/* Bottom Control Overlay Dashboard */}
           {deviceRole && (
-            <div>
-              <div style={styles.card}>
-                <div style={{ backgroundColor: "#030712", borderRadius: "12px", padding: "10px" }}>
-                  <svg viewBox="0 0 700 500" style={{ width: "100%", height: "auto" }}>
-                    <rect width="100%" height="100%" fill="#030712" />
-                    {BUILDING_LAYOUT.rooms.map((room, i) => (
-                      <g key={i}>
-                        <rect x={room.bounds.x} y={room.bounds.y} width={room.bounds.w} height={room.bounds.h} fill="#111827" stroke="#374151" strokeWidth="2" rx="6" />
-                        <text x={room.center[0]} y={room.center[1]} textAnchor="middle" fill="#6b7280" fontSize="13" fontWeight="bold">{room.name}</text>
-                      </g>
-                    ))}
-                    <line x1="100" y1="150" x2="550" y2="150" stroke="#1f2937" strokeWidth="40" strokeLinecap="round" />
-                    <line x1="550" y1="150" x2="550" y2="400" stroke="#1f2937" strokeWidth="40" strokeLinecap="round" />
-                    <line x1="100" y1="150" x2="100" y2="400" stroke="#1f2937" strokeWidth="40" strokeLinecap="round" />
-
-                    {Object.values(peerDevices).map((peer) => (
-                      <g key={peer.userId}>
-                        <circle cx={peer.position[0]} cy={peer.position[1]} r="10" fill="#3b82f6" />
-                        <text x={peer.position[0]} y={peer.position[1] - 16} textAnchor="middle" fill="#60a5fa" fontSize="11">{peer.userId} ({peer.room})</text>
-                      </g>
-                    ))}
-
-                    <g>
-                      <circle cx={position[0]} cy={position[1]} r="10" fill="#0d9488" />
-                      <text x={position[0]} y={position[1] - 18} textAnchor="middle" fill="#2dd4bf" fontSize="12" fontWeight="bold">YOU ({activeZone})</text>
-                    </g>
-                  </svg>
+            <footer className="z-20 p-4 glass-card border-t border-gray-800 flex flex-col md:flex-row gap-4 items-center justify-between">
+              
+              {/* Telemetry Data */}
+              <div className="grid grid-cols-3 gap-3 w-full md:w-auto">
+                <div className="bg-gray-900/90 border border-gray-800 p-2.5 rounded-xl text-center">
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Zone</span>
+                  <span className="text-xs font-bold text-teal-400 truncate block mt-0.5">{activeZone}</span>
                 </div>
-
-                <div style={{ marginTop: "16px", textAlign: "center" }}>
-                  <div style={{ display: "flex", gap: "8px", justifyContent: "center" }}>
-                    <button onClick={() => handleManualWalk("LEFT")} style={styles.btnNav}>⬅️ West</button>
-                    <button onClick={() => handleManualWalk("UP")} style={styles.btnNav}>⬆️ North</button>
-                    <button onClick={() => handleManualWalk("DOWN")} style={styles.btnNav}>⬇️ South</button>
-                    <button onClick={() => handleManualWalk("RIGHT")} style={styles.btnNav}>➡️ East</button>
-                  </div>
+                <div className="bg-gray-900/90 border border-gray-800 p-2.5 rounded-xl text-center">
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Peers</span>
+                  <span className="text-xs font-bold text-blue-400 block mt-0.5">{Object.keys(peerDevices).length} Online</span>
+                </div>
+                <div className="bg-gray-900/90 border border-gray-800 p-2.5 rounded-xl text-center">
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Steps / Heading</span>
+                  <span className="text-xs font-bold text-gray-200 block mt-0.5">{stepCount} | {heading}°</span>
                 </div>
               </div>
-            </div>
+
+              {/* Manual Walk Touch Pad */}
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-400 font-semibold hidden sm:inline">Manual Control:</span>
+                <div className="flex gap-1.5">
+                  <button onClick={() => handleManualWalk("LEFT")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700 transition-all">⬅️</button>
+                  <button onClick={() => handleManualWalk("UP")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700 transition-all">⬆️</button>
+                  <button onClick={() => handleManualWalk("DOWN")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700 transition-all">⬇️</button>
+                  <button onClick={() => handleManualWalk("RIGHT")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700 transition-all">➡️</button>
+                </div>
+              </div>
+
+            </footer>
           )}
+
         </div>
       );
     }
