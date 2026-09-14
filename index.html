@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Enterprise PDR Indoor Tracker</title>
   
-  <!-- Dependencies -->
+  <!-- CDN Dependencies -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -47,13 +47,13 @@
       const [peerDevices, setPeerDevices] = useState({});
       const [isConnected, setIsConnected] = useState(false);
       const [sensorStatus, setSensorStatus] = useState("Idle");
-      const [filterState, setFilterState] = useState("Stationary");
+      const [detectionState, setDetectionState] = useState("Stationary");
       
-      const pdrEngineRef = useRef({
+      const pdrState = useRef({
         gravity: { x: 0, y: 0, z: 0 },
-        linearAccHistory: [],
-        lastStepTimestamp: 0,
-        stepWindow: []
+        peakDetected: false,
+        lastStepTime: 0,
+        peakTime: 0
       });
 
       const channelRef = useRef(null);
@@ -114,9 +114,9 @@
           }
         }
 
-        setSensorStatus("PDR Engine Live ⚡");
+        setSensorStatus("PDR Engine Active ⚡");
 
-        // Heading with Low-Pass Smoothing Filter
+        // Compass / Orientation
         window.addEventListener("deviceorientation", (e) => {
           let rawHeading = 0;
           if (e.webkitCompassHeading) {
@@ -125,8 +125,7 @@
             rawHeading = 360 - e.alpha;
           }
 
-          // Smooth heading to avoid jitter during hand movements
-          const alpha = 0.25;
+          const alpha = 0.2;
           let diff = rawHeading - headingRef.current;
           if (diff > 180) diff -= 360;
           if (diff < -180) diff += 360;
@@ -135,58 +134,53 @@
           setHeading(smoothedHeading);
         });
 
-        // Advanced Human Gait / Walking Detector
+        // Strict Peak-and-Valley Step Engine
         window.addEventListener("devicemotion", (e) => {
           const acc = e.accelerationIncludingGravity;
           if (!acc || acc.x === null) return;
 
-          // Low-pass filter to isolate gravity from linear acceleration
-          const alpha = 0.8;
-          const engine = pdrEngineRef.current;
+          const alpha = 0.85;
+          const state = pdrState.current;
           
-          engine.gravity.x = alpha * engine.gravity.x + (1 - alpha) * acc.x;
-          engine.gravity.y = alpha * engine.gravity.y + (1 - alpha) * acc.y;
-          engine.gravity.z = alpha * engine.gravity.z + (1 - alpha) * acc.z;
+          // Isolate gravity
+          state.gravity.x = alpha * state.gravity.x + (1 - alpha) * acc.x;
+          state.gravity.y = alpha * state.gravity.y + (1 - alpha) * acc.y;
+          state.gravity.z = alpha * state.gravity.z + (1 - alpha) * acc.z;
 
-          // Pure Linear Acceleration (Movement minus gravity force)
-          const linX = acc.x - engine.gravity.x;
-          const linY = acc.y - engine.gravity.y;
-          const linZ = acc.z - engine.gravity.z;
-
-          const linMag = Math.sqrt(linX * linX + linY * linY + linZ * linZ);
+          // Vertical dynamic acceleration
+          const linZ = acc.z - state.gravity.z;
+          const linX = acc.x - state.gravity.x;
+          const linY = acc.y - state.gravity.y;
           
-          // Maintain sliding window of acceleration history
-          engine.linearAccHistory.push(linMag);
-          if (engine.linearAccHistory.length > 15) engine.linearAccHistory.shift();
+          const totalLinear = Math.sqrt(linX * linX + linY * linY + linZ * linZ);
 
           const now = Date.now();
-          const timeSinceLastStep = now - engine.lastStepTimestamp;
+          const timeSinceLastStep = now - state.lastStepTime;
 
-          // Human Step Characteristics:
-          // 1. Minimum Cadence: Insan 380ms se tezz step nahi le sakta.
-          // 2. Magnitude Threshold: Pure linear acceleration peak > 1.8 m/s² (Hand shakes filtered out).
-          // 3. Peak-Valley Validation: Acceleration drop following a peak.
-          if (linMag > 1.85 && timeSinceLastStep > 400) {
-            
-            // Check previous values to ensure true wave peak
-            const prev = engine.linearAccHistory[engine.linearAccHistory.length - 2] || 0;
-            if (linMag >= prev) {
-              engine.lastStepTimestamp = now;
-              setFilterState("Valid Step Detected ✅");
+          // Phase 1: High Acceleration Peak (Positive Surge)
+          if (totalLinear > 2.2 && !state.peakDetected && timeSinceLastStep > 450) {
+            state.peakDetected = true;
+            state.peakTime = now;
+            setDetectionState("Peak Found... Waiting Valley");
+          }
+
+          // Phase 2: Valley Drop within 300ms (Human foot impact)
+          if (state.peakDetected && (now - state.peakTime) < 300) {
+            if (linZ < -1.1 || totalLinear < 0.8) {
+              state.peakDetected = false;
+              state.lastStepTime = now;
+              
+              setDetectionState("Step Confirmed ✅");
 
               setStepCount((prevCount) => {
                 const currentH = headingRef.current;
-                
-                // Vector displacement mapped to map coordinate space
                 const rad = ((currentH - 90) * Math.PI) / 180;
-                const strideLength = 20; // 20 pixels distance per actual step
+                const strideLength = 22; // Pixels per step
 
                 const dx = Math.cos(rad) * strideLength;
                 const dy = Math.sin(rad) * strideLength;
 
                 const currentPos = positionRef.current;
-                
-                // Keep marker inside boundary limits
                 const nextX = Math.max(30, Math.min(670, currentPos[0] + dx));
                 const nextY = Math.max(30, Math.min(450, currentPos[1] + dy));
                 
@@ -195,10 +189,18 @@
                 return prevCount + 1;
               });
 
-              setTimeout(() => setFilterState("Walking / Filtering Noise"), 600);
+              setTimeout(() => setDetectionState("Walking Filter Active"), 500);
             }
-          } else if (timeSinceLastStep > 1500) {
-            setFilterState("Stationary 🛑");
+          }
+
+          // Timeout if peak was fake (Hand shake without foot impact)
+          if (state.peakDetected && (now - state.peakTime) >= 300) {
+            state.peakDetected = false;
+            setDetectionState("Hand Shake Ignored 🚫");
+          }
+
+          if (timeSinceLastStep > 2000 && !state.peakDetected) {
+            setDetectionState("Stationary 🛑");
           }
         });
       };
@@ -231,7 +233,7 @@
             </div>
           </header>
 
-          {/* Mode Selection */}
+          {/* Mode Overlay */}
           {!deviceRole && (
             <div className="absolute inset-0 z-30 flex items-center justify-center p-6 bg-gray-950/90 backdrop-blur-md">
               <div className="max-w-md w-full glass-card p-6 rounded-2xl border border-gray-800 text-center shadow-2xl">
@@ -253,7 +255,7 @@
             </div>
           )}
 
-          {/* Map Section */}
+          {/* Map */}
           <main className="relative flex-1 w-full h-full bg-gray-950 flex items-center justify-center overflow-hidden">
             <svg viewBox="0 0 700 480" className="w-full h-full p-2 max-h-[85vh] object-contain">
               <defs>
@@ -268,7 +270,6 @@
 
               <rect width="100%" height="100%" fill="url(#grid)" />
 
-              {/* Rooms */}
               {BUILDING_LAYOUT.rooms.map((room, i) => (
                 <g key={i}>
                   <rect x={room.bounds.x} y={room.bounds.y} width={room.bounds.w} height={room.bounds.h} fill="#111827" stroke="#374151" strokeWidth="2.5" rx="12" />
@@ -276,7 +277,6 @@
                 </g>
               ))}
 
-              {/* Peer Devices */}
               {Object.values(peerDevices).map((peer) => (
                 <g key={peer.userId}>
                   <circle cx={peer.position[0]} cy={peer.position[1]} r="16" fill="#3b82f6" opacity="0.25" />
@@ -287,12 +287,10 @@
                 </g>
               ))}
 
-              {/* Active User Live Position */}
               <g filter="url(#glow)">
                 <circle cx={position[0]} cy={position[1]} r="24" fill="#0d9488" opacity="0.35" className="animate-ping" />
                 <circle cx={position[0]} cy={position[1]} r="11" fill="#14b8a6" stroke="#ffffff" strokeWidth="2.5" />
                 
-                {/* Heading Arrow Line */}
                 <line 
                   x1={position[0]} 
                   y1={position[1]} 
@@ -327,12 +325,12 @@
                   <span className="text-xs font-bold text-gray-200 block mt-0.5">{heading}°</span>
                 </div>
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Motion Filter</span>
-                  <span className="text-[11px] font-bold text-amber-400 truncate block mt-0.5">{filterState}</span>
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Status</span>
+                  <span className="text-[11px] font-bold text-amber-400 truncate block mt-0.5">{detectionState}</span>
                 </div>
               </div>
 
-              {/* Manual Override Controls */}
+              {/* Manual Control Pad */}
               <div className="flex items-center gap-2">
                 <div className="flex gap-1.5">
                   <button onClick={() => handleManualWalk("LEFT")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700">⬅️</button>
