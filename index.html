@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Enterprise Indoor PDR Map</title>
+  <title>Autonomous Enterprise Indoor PDR Map</title>
   
   <!-- CDN Dependencies -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -29,7 +29,6 @@
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImduaGtnanFpcWVvcmF5Z3pqaWtkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkzOTIxMzIsImV4cCI6MjEwNDk2ODEzMn0.AvHjI6gAQA-LnPJY99BtbDnB2ryKj7NXwkXIj7AI0Uk";
     const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    // Advanced Multi-Room Architectural Floor Plan (Bounds: X: 0-700, Y: 0-480)
     const BUILDING_LAYOUT = {
       rooms: [
         { id: "R1", name: "Main Entrance", bounds: { x: 40, y: 360, w: 160, h: 90 }, center: [120, 405], color: "#1e293b" },
@@ -49,24 +48,26 @@
     function App() {
       const [deviceRole, setDeviceRole] = useState(null);
       const [userId] = useState(`DEV-${Math.floor(1000 + Math.random() * 9000)}`);
-      const [position, setPosition] = useState([120, 405]); // Starts at Entrance
+      const [position, setPosition] = useState([120, 405]);
       const [heading, setHeading] = useState(0);
       const [activeZone, setActiveZone] = useState("Main Entrance");
       const [stepCount, setStepCount] = useState(0);
       const [peerDevices, setPeerDevices] = useState({});
       const [isConnected, setIsConnected] = useState(false);
-      const [isWalkingMode, setIsWalkingMode] = useState(false);
-      const [detectionState, setDetectionState] = useState("LOCKED (Stationary)");
+      const [detectionState, setDetectionState] = useState("Autonomous Engine Active");
       
-      const pdrState = useRef({ lastZ: 0, lastStepTime: 0 });
+      const pdrState = useRef({ 
+        lastZ: 0, 
+        lastStepTime: 0, 
+        filteredAcc: 0 
+      });
+
       const channelRef = useRef(null);
       const headingRef = useRef(0);
       const positionRef = useRef([120, 405]);
-      const walkingModeRef = useRef(false);
 
       useEffect(() => { positionRef.current = position; }, [position]);
       useEffect(() => { headingRef.current = heading; }, [heading]);
-      useEffect(() => { walkingModeRef.current = isWalkingMode; }, [isWalkingMode]);
 
       useEffect(() => {
         const channel = supabaseClient.channel("indoor_tracking_room", { config: { broadcast: { self: false } } });
@@ -114,6 +115,7 @@
           }
         }
 
+        // Compass Heading Implementation
         window.addEventListener("deviceorientation", (e) => {
           let rawHeading = 0;
           if (e.webkitCompassHeading) {
@@ -131,22 +133,25 @@
           setHeading(smoothedHeading);
         });
 
+        // 100% Autonomous Zero-Hands Step Algorithm
         window.addEventListener("devicemotion", (e) => {
-          if (!walkingModeRef.current) return;
-
-          const acc = e.acceleration;
+          const acc = e.accelerationIncludingGravity || e.acceleration;
           if (!acc || acc.z === null) return;
 
-          const zVal = acc.z || 0;
-          const zDelta = Math.abs(zVal - pdrState.current.lastZ);
-          pdrState.current.lastZ = zVal;
+          // Low-pass filter to isolate vertical foot strike force
+          const alpha = 0.8;
+          pdrState.current.filteredAcc = alpha * pdrState.current.filteredAcc + (1 - alpha) * acc.z;
+          const zDelta = Math.abs(acc.z - pdrState.current.filteredAcc);
 
           const now = Date.now();
-          const timeSinceStep = now - pdrState.current.lastStepTime;
+          const timeSinceLastStep = now - pdrState.current.lastStepTime;
 
-          if (zDelta > 3.5 && timeSinceStep > 480) {
+          // Strict Physical Constraints:
+          // 1. Force must exceed 3.8 m/s^2 (Foot strike impact)
+          // 2. Minimum 420ms human stride interval (Prevents high-frequency hand shakes)
+          if (zDelta > 3.8 && timeSinceLastStep > 420) {
             pdrState.current.lastStepTime = now;
-            setDetectionState("Step Confirmed ✅");
+            setDetectionState("Real Walk Step ✅");
 
             setStepCount((prevCount) => {
               const currentH = headingRef.current;
@@ -165,17 +170,9 @@
               return prevCount + 1;
             });
 
-            setTimeout(() => {
-              if (walkingModeRef.current) setDetectionState("Tracking Motion...");
-            }, 500);
+            setTimeout(() => setDetectionState("Auto-Detecting Step..."), 600);
           }
         });
-      };
-
-      const toggleWalkingMode = () => {
-        const nextState = !isWalkingMode;
-        setIsWalkingMode(nextState);
-        setDetectionState(nextState ? "Tracking Motion..." : "LOCKED (Stationary)");
       };
 
       const handleManualWalk = (dir) => {
@@ -197,37 +194,29 @@
           {/* Header Bar */}
           <header className="z-20 p-4 glass-card border-b border-gray-800 flex justify-between items-center shadow-2xl">
             <div>
-              <h1 className="text-lg font-bold tracking-tight text-teal-400">HQ Floor Positioning System</h1>
+              <h1 className="text-lg font-bold tracking-tight text-teal-400">Autonomous Indoor PDR</h1>
               <p className="text-xs text-gray-400">Node ID: <span className="text-gray-200 font-mono">{userId}</span></p>
             </div>
             
-            {deviceRole === "broadcaster" && (
-              <button 
-                onClick={toggleWalkingMode}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all border ${
-                  isWalkingMode 
-                    ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/50 animate-pulse" 
-                    : "bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700"
-                }`}
-              >
-                {isWalkingMode ? "🛑 Stop Walk Mode" : "🚶 Start Walking Mode"}
-              </button>
-            )}
+            <div className="flex items-center gap-2 bg-gray-900/80 px-3 py-1.5 rounded-full border border-gray-700">
+              <span className={`w-2.5 h-2.5 rounded-full ${isConnected ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
+              <span className="text-xs font-semibold text-gray-300">{isConnected ? "PDR Live" : "Connecting..."}</span>
+            </div>
           </header>
 
-          {/* Role Selection Screen */}
+          {/* Startup Overlay */}
           {!deviceRole && (
             <div className="absolute inset-0 z-30 flex items-center justify-center p-6 bg-gray-950/90 backdrop-blur-md">
               <div className="max-w-md w-full glass-card p-6 rounded-2xl border border-gray-800 text-center shadow-2xl">
                 <div className="w-12 h-12 bg-teal-500/10 text-teal-400 rounded-xl flex items-center justify-center mx-auto mb-4 border border-teal-500/20 text-2xl">
-                  🏢
+                  🚀
                 </div>
-                <h2 className="text-xl font-bold mb-2">HQ Navigation Node</h2>
-                <p className="text-sm text-gray-400 mb-6">Select mode to view real-time architectural PDR tracking.</p>
+                <h2 className="text-xl font-bold mb-2">Initialize Autonomous Node</h2>
+                <p className="text-sm text-gray-400 mb-6">Zero manual inputs required. System operates continuously in real-time.</p>
                 
                 <div className="space-y-3">
                   <button onClick={startHardwareSensors} className="w-full py-3.5 px-4 bg-teal-600 hover:bg-teal-500 text-white font-semibold rounded-xl transition-all shadow-lg active:scale-95">
-                    📱 Mobile Broadcaster (Hardware PDR)
+                    📱 Broadcaster (Enable Motion Sensors)
                   </button>
                   <button onClick={() => setDeviceRole("receiver")} className="w-full py-3.5 px-4 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 font-semibold rounded-xl transition-all active:scale-95">
                     🖥️ Live Map Observer
@@ -237,7 +226,7 @@
             </div>
           )}
 
-          {/* SVG Map Canvas */}
+          {/* Architectural SVG Map */}
           <main className="relative flex-1 w-full h-full bg-gray-950 flex items-center justify-center overflow-hidden">
             <svg viewBox="0 0 700 480" className="w-full h-full p-2 max-h-[85vh] object-contain">
               <defs>
@@ -250,18 +239,13 @@
                 </filter>
               </defs>
 
-              {/* Background Grid */}
               <rect width="100%" height="100%" fill="url(#grid)" />
+              <rect x="25" y="15" width="650" height="450" fill="none" stroke="#475569" strokeWidth="4" rx="16" />
 
-              {/* Outer Building Boundary */}
-              <rect x="25" y="15" width="650" h="450" fill="none" stroke="#475569" strokeWidth="4" rx="16" />
-
-              {/* Corridors */}
               {BUILDING_LAYOUT.corridors.map((c, i) => (
                 <rect key={i} x={c.bounds.x} y={c.bounds.y} width={c.bounds.w} height={c.bounds.h} fill="#111827" opacity="0.6" />
               ))}
 
-              {/* Rooms */}
               {BUILDING_LAYOUT.rooms.map((room) => {
                 const isUserInRoom = activeZone === room.name;
                 return (
@@ -276,10 +260,7 @@
                       strokeWidth={isUserInRoom ? "2.5" : "1.5"} 
                       rx="8" 
                     />
-                    {/* Door Indicators */}
                     <circle cx={room.center[0]} cy={room.bounds.y + room.bounds.h} r="3" fill="#64748b" />
-                    
-                    {/* Room Labels */}
                     <text x={room.center[0]} y={room.center[1] - 4} textAnchor="middle" fill={isUserInRoom ? "#5eead4" : "#94a3b8"} fontSize="12" fontWeight="700">
                       {room.name}
                     </text>
@@ -301,12 +282,11 @@
                 </g>
               ))}
 
-              {/* Active User Marker */}
+              {/* User Marker */}
               <g filter="url(#glow)">
                 <circle cx={position[0]} cy={position[1]} r="22" fill="#0d9488" opacity="0.3" className="animate-ping" />
                 <circle cx={position[0]} cy={position[1]} r="10" fill="#14b8a6" stroke="#ffffff" strokeWidth="2.5" />
                 
-                {/* Heading Arrow Pointer */}
                 <line 
                   x1={position[0]} 
                   y1={position[1]} 
@@ -324,7 +304,7 @@
             </svg>
           </main>
 
-          {/* Footer Navigation Data Bar */}
+          {/* Footer Metrics */}
           {deviceRole && (
             <footer className="z-20 p-4 glass-card border-t border-gray-800 flex flex-col md:flex-row gap-4 items-center justify-between">
               <div className="grid grid-cols-4 gap-2 w-full md:w-auto">
@@ -333,7 +313,7 @@
                   <span className="text-xs font-bold text-teal-400 truncate block mt-0.5">{activeZone}</span>
                 </div>
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Total Steps</span>
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Real Steps</span>
                   <span className="text-xs font-bold text-teal-300 block mt-0.5">{stepCount}</span>
                 </div>
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
@@ -341,12 +321,12 @@
                   <span className="text-xs font-bold text-gray-200 block mt-0.5">{heading}°</span>
                 </div>
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Engine</span>
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Engine State</span>
                   <span className="text-[11px] font-bold text-amber-400 truncate block mt-0.5">{detectionState}</span>
                 </div>
               </div>
 
-              {/* Manual Control Pad */}
+              {/* Manual Controls Backup */}
               <div className="flex items-center gap-2">
                 <div className="flex gap-1.5">
                   <button onClick={() => handleManualWalk("LEFT")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700">⬅️</button>
