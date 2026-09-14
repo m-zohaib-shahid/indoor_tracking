@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Enterprise PDR Indoor Tracker</title>
+  <title>Enterprise Indoor PDR Map</title>
   
   <!-- CDN Dependencies -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -15,7 +15,7 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-tap-highlight-color: transparent; }
     body, html, #root { width: 100%; height: 100%; overflow: hidden; background-color: #030712; font-family: system-ui, -apple-system, sans-serif; }
-    .glass-card { background: rgba(17, 24, 39, 0.75); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.1); }
+    .glass-card { background: rgba(17, 24, 39, 0.85); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.1); }
   </style>
 </head>
 <body>
@@ -29,39 +29,44 @@
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImduaGtnanFpcWVvcmF5Z3pqaWtkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkzOTIxMzIsImV4cCI6MjEwNDk2ODEzMn0.AvHjI6gAQA-LnPJY99BtbDnB2ryKj7NXwkXIj7AI0Uk";
     const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+    // Advanced Multi-Room Architectural Floor Plan (Bounds: X: 0-700, Y: 0-480)
     const BUILDING_LAYOUT = {
       rooms: [
-        { name: "Room 101", bounds: { x: 30, y: 290, w: 140, h: 140 }, center: [100, 360] },
-        { name: "Executive Suite", bounds: { x: 230, y: 20, w: 180, h: 100 }, center: [320, 70] },
-        { name: "AI Tech Lab", bounds: { x: 480, y: 290, w: 140, h: 140 }, center: [550, 360] },
+        { id: "R1", name: "Main Entrance", bounds: { x: 40, y: 360, w: 160, h: 90 }, center: [120, 405], color: "#1e293b" },
+        { id: "R2", name: "Reception Lobby", bounds: { x: 40, y: 200, w: 160, h: 140 }, center: [120, 270], color: "#0f172a" },
+        { id: "R3", name: "Open Workspace", bounds: { x: 230, y: 30, w: 240, h: 220 }, center: [350, 140], color: "#0f172a" },
+        { id: "R4", name: "Conference Room", bounds: { x: 500, y: 30, w: 160, h: 140 }, center: [580, 100], color: "#1e293b" },
+        { id: "R5", name: "Executive Suite", bounds: { x: 500, y: 190, w: 160, h: 120 }, center: [580, 250], color: "#1e293b" },
+        { id: "R6", name: "Server Room / IT Lab", bounds: { x: 40, y: 30, w: 160, h: 150 }, center: [120, 105], color: "#1e293b" },
+        { id: "R7", name: "Cafeteria & Lounge", bounds: { x: 230, y: 280, w: 240, h: 170 }, center: [350, 365], color: "#0f172a" }
+      ],
+      corridors: [
+        { name: "Main Corridor", bounds: { x: 205, y: 30, w: 20, h: 420 } },
+        { name: "East Corridor", bounds: { x: 475, y: 30, w: 20, h: 420 } }
       ]
     };
 
     function App() {
       const [deviceRole, setDeviceRole] = useState(null);
       const [userId] = useState(`DEV-${Math.floor(1000 + Math.random() * 9000)}`);
-      const [position, setPosition] = useState([350, 240]);
+      const [position, setPosition] = useState([120, 405]); // Starts at Entrance
       const [heading, setHeading] = useState(0);
-      const [activeZone, setActiveZone] = useState("Central Zone");
+      const [activeZone, setActiveZone] = useState("Main Entrance");
       const [stepCount, setStepCount] = useState(0);
       const [peerDevices, setPeerDevices] = useState({});
       const [isConnected, setIsConnected] = useState(false);
-      const [sensorStatus, setSensorStatus] = useState("Idle");
-      const [detectionState, setDetectionState] = useState("Stationary");
+      const [isWalkingMode, setIsWalkingMode] = useState(false);
+      const [detectionState, setDetectionState] = useState("LOCKED (Stationary)");
       
-      const pdrState = useRef({
-        gravity: { x: 0, y: 0, z: 0 },
-        peakDetected: false,
-        lastStepTime: 0,
-        peakTime: 0
-      });
-
+      const pdrState = useRef({ lastZ: 0, lastStepTime: 0 });
       const channelRef = useRef(null);
       const headingRef = useRef(0);
-      const positionRef = useRef([350, 240]);
+      const positionRef = useRef([120, 405]);
+      const walkingModeRef = useRef(false);
 
       useEffect(() => { positionRef.current = position; }, [position]);
       useEffect(() => { headingRef.current = heading; }, [heading]);
+      useEffect(() => { walkingModeRef.current = isWalkingMode; }, [isWalkingMode]);
 
       useEffect(() => {
         const channel = supabaseClient.channel("indoor_tracking_room", { config: { broadcast: { self: false } } });
@@ -77,7 +82,7 @@
       }, [userId]);
 
       const calculateZone = (pos) => {
-        let zone = "Central Hallway";
+        let zone = "Central Walkway";
         BUILDING_LAYOUT.rooms.forEach((r) => {
           const { x, y, w, h } = r.bounds;
           if (pos[0] >= x && pos[0] <= x + w && pos[1] >= y && pos[1] <= y + h) {
@@ -99,24 +104,16 @@
 
       const startHardwareSensors = async () => {
         setDeviceRole("broadcaster");
-        setSensorStatus("Requesting Access...");
 
         if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
           try {
-            const m = await DeviceMotionEvent.requestPermission();
-            const o = await DeviceOrientationEvent.requestPermission();
-            if (m !== "granted" || o !== "granted") {
-              setSensorStatus("Permission Denied");
-              return;
-            }
+            await DeviceMotionEvent.requestPermission();
+            await DeviceOrientationEvent.requestPermission();
           } catch (e) {
             console.error(e);
           }
         }
 
-        setSensorStatus("PDR Engine Active ⚡");
-
-        // Compass / Orientation
         window.addEventListener("deviceorientation", (e) => {
           let rawHeading = 0;
           if (e.webkitCompassHeading) {
@@ -134,75 +131,51 @@
           setHeading(smoothedHeading);
         });
 
-        // Strict Peak-and-Valley Step Engine
         window.addEventListener("devicemotion", (e) => {
-          const acc = e.accelerationIncludingGravity;
-          if (!acc || acc.x === null) return;
+          if (!walkingModeRef.current) return;
 
-          const alpha = 0.85;
-          const state = pdrState.current;
-          
-          // Isolate gravity
-          state.gravity.x = alpha * state.gravity.x + (1 - alpha) * acc.x;
-          state.gravity.y = alpha * state.gravity.y + (1 - alpha) * acc.y;
-          state.gravity.z = alpha * state.gravity.z + (1 - alpha) * acc.z;
+          const acc = e.acceleration;
+          if (!acc || acc.z === null) return;
 
-          // Vertical dynamic acceleration
-          const linZ = acc.z - state.gravity.z;
-          const linX = acc.x - state.gravity.x;
-          const linY = acc.y - state.gravity.y;
-          
-          const totalLinear = Math.sqrt(linX * linX + linY * linY + linZ * linZ);
+          const zVal = acc.z || 0;
+          const zDelta = Math.abs(zVal - pdrState.current.lastZ);
+          pdrState.current.lastZ = zVal;
 
           const now = Date.now();
-          const timeSinceLastStep = now - state.lastStepTime;
+          const timeSinceStep = now - pdrState.current.lastStepTime;
 
-          // Phase 1: High Acceleration Peak (Positive Surge)
-          if (totalLinear > 2.2 && !state.peakDetected && timeSinceLastStep > 450) {
-            state.peakDetected = true;
-            state.peakTime = now;
-            setDetectionState("Peak Found... Waiting Valley");
-          }
+          if (zDelta > 3.5 && timeSinceStep > 480) {
+            pdrState.current.lastStepTime = now;
+            setDetectionState("Step Confirmed ✅");
 
-          // Phase 2: Valley Drop within 300ms (Human foot impact)
-          if (state.peakDetected && (now - state.peakTime) < 300) {
-            if (linZ < -1.1 || totalLinear < 0.8) {
-              state.peakDetected = false;
-              state.lastStepTime = now;
+            setStepCount((prevCount) => {
+              const currentH = headingRef.current;
+              const rad = ((currentH - 90) * Math.PI) / 180;
+              const strideLength = 20;
+
+              const dx = Math.cos(rad) * strideLength;
+              const dy = Math.sin(rad) * strideLength;
+
+              const currentPos = positionRef.current;
+              const nextX = Math.max(30, Math.min(670, currentPos[0] + dx));
+              const nextY = Math.max(30, Math.min(450, currentPos[1] + dy));
               
-              setDetectionState("Step Confirmed ✅");
+              const nextPos = [nextX, nextY];
+              transmitLocation(nextPos, currentH);
+              return prevCount + 1;
+            });
 
-              setStepCount((prevCount) => {
-                const currentH = headingRef.current;
-                const rad = ((currentH - 90) * Math.PI) / 180;
-                const strideLength = 22; // Pixels per step
-
-                const dx = Math.cos(rad) * strideLength;
-                const dy = Math.sin(rad) * strideLength;
-
-                const currentPos = positionRef.current;
-                const nextX = Math.max(30, Math.min(670, currentPos[0] + dx));
-                const nextY = Math.max(30, Math.min(450, currentPos[1] + dy));
-                
-                const nextPos = [nextX, nextY];
-                transmitLocation(nextPos, currentH);
-                return prevCount + 1;
-              });
-
-              setTimeout(() => setDetectionState("Walking Filter Active"), 500);
-            }
-          }
-
-          // Timeout if peak was fake (Hand shake without foot impact)
-          if (state.peakDetected && (now - state.peakTime) >= 300) {
-            state.peakDetected = false;
-            setDetectionState("Hand Shake Ignored 🚫");
-          }
-
-          if (timeSinceLastStep > 2000 && !state.peakDetected) {
-            setDetectionState("Stationary 🛑");
+            setTimeout(() => {
+              if (walkingModeRef.current) setDetectionState("Tracking Motion...");
+            }, 500);
           }
         });
+      };
+
+      const toggleWalkingMode = () => {
+        const nextState = !isWalkingMode;
+        setIsWalkingMode(nextState);
+        setDetectionState(nextState ? "Tracking Motion..." : "LOCKED (Stationary)");
       };
 
       const handleManualWalk = (dir) => {
@@ -221,46 +194,55 @@
       return (
         <div className="relative w-full h-full flex flex-col justify-between overflow-hidden bg-gray-950 text-white">
           
-          {/* Header */}
+          {/* Header Bar */}
           <header className="z-20 p-4 glass-card border-b border-gray-800 flex justify-between items-center shadow-2xl">
             <div>
-              <h1 className="text-lg font-bold tracking-tight text-teal-400">PDR Indoor Tracker</h1>
+              <h1 className="text-lg font-bold tracking-tight text-teal-400">HQ Floor Positioning System</h1>
               <p className="text-xs text-gray-400">Node ID: <span className="text-gray-200 font-mono">{userId}</span></p>
             </div>
-            <div className="flex items-center gap-2 bg-gray-900/80 px-3 py-1.5 rounded-full border border-gray-700">
-              <span className={`w-2.5 h-2.5 rounded-full ${isConnected ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
-              <span className="text-xs font-semibold text-gray-300">{isConnected ? sensorStatus : "Connecting..."}</span>
-            </div>
+            
+            {deviceRole === "broadcaster" && (
+              <button 
+                onClick={toggleWalkingMode}
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all border ${
+                  isWalkingMode 
+                    ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/50 animate-pulse" 
+                    : "bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700"
+                }`}
+              >
+                {isWalkingMode ? "🛑 Stop Walk Mode" : "🚶 Start Walking Mode"}
+              </button>
+            )}
           </header>
 
-          {/* Mode Overlay */}
+          {/* Role Selection Screen */}
           {!deviceRole && (
             <div className="absolute inset-0 z-30 flex items-center justify-center p-6 bg-gray-950/90 backdrop-blur-md">
               <div className="max-w-md w-full glass-card p-6 rounded-2xl border border-gray-800 text-center shadow-2xl">
                 <div className="w-12 h-12 bg-teal-500/10 text-teal-400 rounded-xl flex items-center justify-center mx-auto mb-4 border border-teal-500/20 text-2xl">
-                  📍
+                  🏢
                 </div>
-                <h2 className="text-xl font-bold mb-2">Select Operating Mode</h2>
-                <p className="text-sm text-gray-400 mb-6">Choose how this device should function within the indoor positioning system.</p>
+                <h2 className="text-xl font-bold mb-2">HQ Navigation Node</h2>
+                <p className="text-sm text-gray-400 mb-6">Select mode to view real-time architectural PDR tracking.</p>
                 
                 <div className="space-y-3">
                   <button onClick={startHardwareSensors} className="w-full py-3.5 px-4 bg-teal-600 hover:bg-teal-500 text-white font-semibold rounded-xl transition-all shadow-lg active:scale-95">
-                    📱 Broadcaster (Enable Hardware Sensors)
+                    📱 Mobile Broadcaster (Hardware PDR)
                   </button>
                   <button onClick={() => setDeviceRole("receiver")} className="w-full py-3.5 px-4 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 font-semibold rounded-xl transition-all active:scale-95">
-                    🖥️ Observer (Monitor Fleet)
+                    🖥️ Live Map Observer
                   </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Map */}
+          {/* SVG Map Canvas */}
           <main className="relative flex-1 w-full h-full bg-gray-950 flex items-center justify-center overflow-hidden">
             <svg viewBox="0 0 700 480" className="w-full h-full p-2 max-h-[85vh] object-contain">
               <defs>
                 <pattern id="grid" width="35" height="35" patternUnits="userSpaceOnUse">
-                  <path d="M 35 0 L 0 0 0 35" fill="none" stroke="#1f2937" strokeWidth="0.8" />
+                  <path d="M 35 0 L 0 0 0 35" fill="none" stroke="#1f2937" strokeWidth="0.6" />
                 </pattern>
                 <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
                   <feGaussianBlur stdDeviation="6" result="blur" />
@@ -268,29 +250,63 @@
                 </filter>
               </defs>
 
+              {/* Background Grid */}
               <rect width="100%" height="100%" fill="url(#grid)" />
 
-              {BUILDING_LAYOUT.rooms.map((room, i) => (
-                <g key={i}>
-                  <rect x={room.bounds.x} y={room.bounds.y} width={room.bounds.w} height={room.bounds.h} fill="#111827" stroke="#374151" strokeWidth="2.5" rx="12" />
-                  <text x={room.center[0]} y={room.center[1]} textAnchor="middle" fill="#9ca3af" fontSize="13" fontWeight="700">{room.name}</text>
-                </g>
+              {/* Outer Building Boundary */}
+              <rect x="25" y="15" width="650" h="450" fill="none" stroke="#475569" strokeWidth="4" rx="16" />
+
+              {/* Corridors */}
+              {BUILDING_LAYOUT.corridors.map((c, i) => (
+                <rect key={i} x={c.bounds.x} y={c.bounds.y} width={c.bounds.w} height={c.bounds.h} fill="#111827" opacity="0.6" />
               ))}
 
+              {/* Rooms */}
+              {BUILDING_LAYOUT.rooms.map((room) => {
+                const isUserInRoom = activeZone === room.name;
+                return (
+                  <g key={room.id}>
+                    <rect 
+                      x={room.bounds.x} 
+                      y={room.bounds.y} 
+                      width={room.bounds.w} 
+                      height={room.bounds.h} 
+                      fill={room.color} 
+                      stroke={isUserInRoom ? "#2dd4bf" : "#334155"} 
+                      strokeWidth={isUserInRoom ? "2.5" : "1.5"} 
+                      rx="8" 
+                    />
+                    {/* Door Indicators */}
+                    <circle cx={room.center[0]} cy={room.bounds.y + room.bounds.h} r="3" fill="#64748b" />
+                    
+                    {/* Room Labels */}
+                    <text x={room.center[0]} y={room.center[1] - 4} textAnchor="middle" fill={isUserInRoom ? "#5eead4" : "#94a3b8"} fontSize="12" fontWeight="700">
+                      {room.name}
+                    </text>
+                    <text x={room.center[0]} y={room.center[1] + 12} textAnchor="middle" fill="#64748b" fontSize="9" fontWeight="600">
+                      ZONE {room.id}
+                    </text>
+                  </g>
+                );
+              })}
+
+              {/* Peer Fleet Devices */}
               {Object.values(peerDevices).map((peer) => (
                 <g key={peer.userId}>
-                  <circle cx={peer.position[0]} cy={peer.position[1]} r="16" fill="#3b82f6" opacity="0.25" />
-                  <circle cx={peer.position[0]} cy={peer.position[1]} r="8" fill="#3b82f6" />
-                  <text x={peer.position[0]} y={peer.position[1] - 20} textAnchor="middle" fill="#60a5fa" fontSize="11" fontWeight="700">
+                  <circle cx={peer.position[0]} cy={peer.position[1]} r="14" fill="#3b82f6" opacity="0.25" />
+                  <circle cx={peer.position[0]} cy={peer.position[1]} r="7" fill="#3b82f6" stroke="#ffffff" strokeWidth="1.5" />
+                  <text x={peer.position[0]} y={peer.position[1] - 18} textAnchor="middle" fill="#60a5fa" fontSize="10" fontWeight="700">
                     {peer.userId} ({peer.room})
                   </text>
                 </g>
               ))}
 
+              {/* Active User Marker */}
               <g filter="url(#glow)">
-                <circle cx={position[0]} cy={position[1]} r="24" fill="#0d9488" opacity="0.35" className="animate-ping" />
-                <circle cx={position[0]} cy={position[1]} r="11" fill="#14b8a6" stroke="#ffffff" strokeWidth="2.5" />
+                <circle cx={position[0]} cy={position[1]} r="22" fill="#0d9488" opacity="0.3" className="animate-ping" />
+                <circle cx={position[0]} cy={position[1]} r="10" fill="#14b8a6" stroke="#ffffff" strokeWidth="2.5" />
                 
+                {/* Heading Arrow Pointer */}
                 <line 
                   x1={position[0]} 
                   y1={position[1]} 
@@ -301,31 +317,31 @@
                   strokeLinecap="round" 
                 />
 
-                <text x={position[0]} y={position[1] - 26} textAnchor="middle" fill="#2dd4bf" fontSize="12" fontWeight="800">
+                <text x={position[0]} y={position[1] - 24} textAnchor="middle" fill="#2dd4bf" fontSize="11" fontWeight="800">
                   YOU ({activeZone})
                 </text>
               </g>
             </svg>
           </main>
 
-          {/* Footer Metrics */}
+          {/* Footer Navigation Data Bar */}
           {deviceRole && (
             <footer className="z-20 p-4 glass-card border-t border-gray-800 flex flex-col md:flex-row gap-4 items-center justify-between">
               <div className="grid grid-cols-4 gap-2 w-full md:w-auto">
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Zone</span>
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Current Room</span>
                   <span className="text-xs font-bold text-teal-400 truncate block mt-0.5">{activeZone}</span>
                 </div>
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 block">True Steps</span>
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Total Steps</span>
                   <span className="text-xs font-bold text-teal-300 block mt-0.5">{stepCount}</span>
                 </div>
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Compass</span>
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Bearing</span>
                   <span className="text-xs font-bold text-gray-200 block mt-0.5">{heading}°</span>
                 </div>
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Status</span>
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Engine</span>
                   <span className="text-[11px] font-bold text-amber-400 truncate block mt-0.5">{detectionState}</span>
                 </div>
               </div>
