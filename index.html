@@ -74,21 +74,16 @@
       const [peerDevices, setPeerDevices] = useState({});
       const [isConnected, setIsConnected] = useState(false);
       const [sensorActive, setSensorActive] = useState(false);
+      const [accelValue, setAccelValue] = useState(0);
       
       const accelRef = useRef({ lastMagnitude: 0, lastStepTime: 0 });
       const channelRef = useRef(null);
       const headingRef = useRef(0);
       const positionRef = useRef([100, 150]);
 
-      useEffect(() => {
-        positionRef.current = position;
-      }, [position]);
+      useEffect(() => { positionRef.current = position; }, [position]);
+      useEffect(() => { headingRef.current = heading; }, [heading]);
 
-      useEffect(() => {
-        headingRef.current = heading;
-      }, [heading]);
-
-      // Realtime Peer Subscriptions
       useEffect(() => {
         const channel = supabaseClient.channel("indoor_tracking_room", { config: { broadcast: { self: false } } });
         channel.on("broadcast", { event: "location_update" }, (payload) => {
@@ -112,64 +107,54 @@
         }
       };
 
-      // Hardware Sensors Activation Handler
       const startHardwareSensors = async () => {
         setDeviceRole("broadcaster");
 
-        // 1. Request Permission for iOS 13+ Devices
         if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
           try {
-            const motionPermission = await DeviceMotionEvent.requestPermission();
-            const orientationPermission = await DeviceOrientationEvent.requestPermission();
-            if (motionPermission !== "granted" || orientationPermission !== "granted") {
-              alert("Sensor permissions are required for live positioning!");
-              return;
-            }
+            await DeviceMotionEvent.requestPermission();
+            await DeviceOrientationEvent.requestPermission();
           } catch (e) {
-            console.error("Sensor Permission Error:", e);
+            console.error(e);
           }
         }
 
         setSensorActive(true);
 
-        // 2. Gyroscope / Compass (Heading Angle)
         window.addEventListener("deviceorientation", (e) => {
           let dir = 0;
           if (e.webkitCompassHeading) {
-            dir = e.webkitCompassHeading; // iOS Compass
+            dir = e.webkitCompassHeading;
           } else if (e.alpha !== null) {
-            dir = 360 - e.alpha; // Android Gyro
+            dir = 360 - e.alpha;
           }
-          const finalHeading = Math.round(dir);
-          setHeading(finalHeading);
+          setHeading(Math.round(dir));
         });
 
-        // 3. Accelerometer (PDR Step Detector)
         window.addEventListener("devicemotion", (e) => {
-          const acc = e.accelerationIncludingGravity;
+          const acc = e.accelerationIncludingGravity || e.acceleration;
           if (!acc) return;
 
           const x = acc.x || 0;
           const y = acc.y || 0;
           const z = acc.z || 0;
 
-          // Magnitude Calculation
           const magnitude = Math.sqrt(x * x + y * y + z * z);
           const delta = Math.abs(magnitude - accelRef.current.lastMagnitude);
           accelRef.current.lastMagnitude = magnitude;
 
+          setAccelValue(delta.toFixed(2));
+
           const now = Date.now();
-          // Step Threshold: Spike Detection (> 2.8 m/s²) & Minimum delay between steps (350ms)
-          if (delta > 2.8 && (now - accelRef.current.lastStepTime) > 350) {
+          // Sensitive Step Detector Threshold (Reduced to 1.4 for smooth responsiveness)
+          if (delta > 1.4 && (now - accelRef.current.lastStepTime) > 300) {
             accelRef.current.lastStepTime = now;
 
             setStepCount((prev) => {
               const currentH = headingRef.current;
               const rad = (currentH * Math.PI) / 180;
-              
-              // Move 15 units in vector heading direction
-              const dx = Math.cos(rad) * 15;
-              const dy = Math.sin(rad) * 15;
+              const dx = Math.cos(rad) * 20; // 20 units per step for visible movement
+              const dy = Math.sin(rad) * 20;
               
               const currentPos = positionRef.current;
               const rawNext = [currentPos[0] + dx, currentPos[1] + dy];
@@ -182,7 +167,7 @@
       };
 
       const handleManualWalk = (dir) => {
-        const stepSize = 18;
+        const stepSize = 20;
         let dx = 0, dy = 0, newHeading = heading;
         if (dir === "UP") { dy = -stepSize; newHeading = 270; }
         if (dir === "DOWN") { dy = stepSize; newHeading = 90; }
@@ -197,7 +182,7 @@
       return (
         <div className="relative w-full h-full flex flex-col justify-between overflow-hidden bg-gray-950 text-white">
           
-          {/* Header Bar */}
+          {/* Header */}
           <header className="z-20 p-4 glass-card border-b border-gray-800 flex justify-between items-center shadow-2xl">
             <div>
               <h1 className="text-lg font-bold tracking-tight text-teal-400">PDR Indoor Tracker</h1>
@@ -209,7 +194,7 @@
             </div>
           </header>
 
-          {/* Mode Selection */}
+          {/* Mode Overlay */}
           {!deviceRole && (
             <div className="absolute inset-0 z-30 flex items-center justify-center p-6 bg-gray-950/90 backdrop-blur-md">
               <div className="max-w-md w-full glass-card p-6 rounded-2xl border border-gray-800 text-center shadow-2xl">
@@ -231,7 +216,7 @@
             </div>
           )}
 
-          {/* Map */}
+          {/* SVG Map */}
           <main className="relative flex-1 w-full h-full bg-gray-950 flex items-center justify-center overflow-hidden">
             <svg viewBox="0 0 700 480" className="w-full h-full p-2 max-h-[85vh] object-contain">
               <defs>
@@ -281,31 +266,35 @@
             </svg>
           </main>
 
-          {/* Footer Controls */}
+          {/* Bottom Telemetry & Debug */}
           {deviceRole && (
             <footer className="z-20 p-4 glass-card border-t border-gray-800 flex flex-col md:flex-row gap-4 items-center justify-between">
-              <div className="grid grid-cols-3 gap-3 w-full md:w-auto">
-                <div className="bg-gray-900/90 border border-gray-800 p-2.5 rounded-xl text-center">
+              <div className="grid grid-cols-4 gap-2 w-full md:w-auto">
+                <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
                   <span className="text-[10px] uppercase font-bold text-gray-400 block">Zone</span>
                   <span className="text-xs font-bold text-teal-400 truncate block mt-0.5">{activeZone}</span>
                 </div>
-                <div className="bg-gray-900/90 border border-gray-800 p-2.5 rounded-xl text-center">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Peers</span>
-                  <span className="text-xs font-bold text-blue-400 block mt-0.5">{Object.keys(peerDevices).length} Online</span>
+                <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Steps</span>
+                  <span className="text-xs font-bold text-teal-300 block mt-0.5">{stepCount}</span>
                 </div>
-                <div className="bg-gray-900/90 border border-gray-800 p-2.5 rounded-xl text-center">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Steps / Heading</span>
-                  <span className="text-xs font-bold text-gray-200 block mt-0.5">{stepCount} | {heading}°</span>
+                <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Heading</span>
+                  <span className="text-xs font-bold text-gray-200 block mt-0.5">{heading}°</span>
+                </div>
+                <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Accel Delta</span>
+                  <span className="text-xs font-bold text-amber-400 block mt-0.5">{accelValue}</span>
                 </div>
               </div>
 
+              {/* Manual Control Pad */}
               <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-400 font-semibold hidden sm:inline">Manual Control:</span>
                 <div className="flex gap-1.5">
-                  <button onClick={() => handleManualWalk("LEFT")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700 transition-all">⬅️</button>
-                  <button onClick={() => handleManualWalk("UP")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700 transition-all">⬆️</button>
-                  <button onClick={() => handleManualWalk("DOWN")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700 transition-all">⬇️</button>
-                  <button onClick={() => handleManualWalk("RIGHT")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700 transition-all">➡️</button>
+                  <button onClick={() => handleManualWalk("LEFT")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700">⬅️</button>
+                  <button onClick={() => handleManualWalk("UP")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700">⬆️</button>
+                  <button onClick={() => handleManualWalk("DOWN")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700">⬇️</button>
+                  <button onClick={() => handleManualWalk("RIGHT")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700">➡️</button>
                 </div>
               </div>
             </footer>
