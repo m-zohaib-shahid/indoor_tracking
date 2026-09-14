@@ -54,12 +54,14 @@
       const [stepCount, setStepCount] = useState(0);
       const [peerDevices, setPeerDevices] = useState({});
       const [isConnected, setIsConnected] = useState(false);
-      const [detectionState, setDetectionState] = useState("Autonomous Engine Active");
-      
-      const pdrState = useRef({ 
-        lastZ: 0, 
-        lastStepTime: 0, 
-        filteredAcc: 0 
+      const [detectionState, setDetectionState] = useState("Engine Ready");
+      const [liveAcc, setLiveAcc] = useState(0);
+
+      const pdrState = useRef({
+        baseline: 9.8,
+        filteredMagnitude: 9.8,
+        lastStepTime: 0,
+        isAboveThreshold: false
       });
 
       const channelRef = useRef(null);
@@ -115,7 +117,7 @@
           }
         }
 
-        // Compass Heading Implementation
+        // Heading & Compass tracking
         window.addEventListener("deviceorientation", (e) => {
           let rawHeading = 0;
           if (e.webkitCompassHeading) {
@@ -124,53 +126,70 @@
             rawHeading = 360 - e.alpha;
           }
 
-          const alpha = 0.2;
+          const alpha = 0.25;
           let diff = rawHeading - headingRef.current;
           if (diff > 180) diff -= 360;
           if (diff < -180) diff += 360;
           const smoothedHeading = Math.round((headingRef.current + alpha * diff + 360) % 360);
-          
           setHeading(smoothedHeading);
         });
 
-        // 100% Autonomous Zero-Hands Step Algorithm
+        // Dynamic Peak-Detection Step Engine
         window.addEventListener("devicemotion", (e) => {
-          const acc = e.accelerationIncludingGravity || e.acceleration;
-          if (!acc || acc.z === null) return;
+          let acc = e.accelerationIncludingGravity;
+          if (!acc || acc.x === null) acc = e.acceleration;
+          if (!acc || acc.x === null) return;
 
-          // Low-pass filter to isolate vertical foot strike force
-          const alpha = 0.8;
-          pdrState.current.filteredAcc = alpha * pdrState.current.filteredAcc + (1 - alpha) * acc.z;
-          const zDelta = Math.abs(acc.z - pdrState.current.filteredAcc);
+          const x = acc.x || 0;
+          const y = acc.y || 0;
+          const z = acc.z || 0;
+
+          // Compute total 3D acceleration magnitude
+          const rawMag = Math.sqrt(x * x + y * y + z * z);
+          
+          // Low-pass exponential filter for continuous baseline tracking
+          const alpha = 0.85;
+          pdrState.current.filteredMagnitude = (alpha * pdrState.current.filteredMagnitude) + ((1 - alpha) * rawMag);
+          
+          const delta = Math.abs(rawMag - pdrState.current.filteredMagnitude);
+          setLiveAcc(delta.toFixed(1));
 
           const now = Date.now();
-          const timeSinceLastStep = now - pdrState.current.lastStepTime;
+          const timeElapsed = now - pdrState.current.lastStepTime;
 
-          // Strict Physical Constraints:
-          // 1. Force must exceed 3.8 m/s^2 (Foot strike impact)
-          // 2. Minimum 420ms human stride interval (Prevents high-frequency hand shakes)
-          if (zDelta > 3.8 && timeSinceLastStep > 420) {
-            pdrState.current.lastStepTime = now;
-            setDetectionState("Real Walk Step ✅");
+          // Dynamic Step Detection Trigger Logic:
+          // 1. Minimum relative dynamic force: 1.6 m/s^2 (sensitive enough for walking, ignores idle shaking)
+          // 2. Human stride time frame window: 300ms to 1200ms
+          if (delta > 1.6 && !pdrState.current.isAboveThreshold) {
+            pdrState.current.isAboveThreshold = true;
+          }
 
-            setStepCount((prevCount) => {
-              const currentH = headingRef.current;
-              const rad = ((currentH - 90) * Math.PI) / 180;
-              const strideLength = 20;
+          if (delta < 1.0 && pdrState.current.isAboveThreshold) {
+            pdrState.current.isAboveThreshold = false;
 
-              const dx = Math.cos(rad) * strideLength;
-              const dy = Math.sin(rad) * strideLength;
+            if (timeElapsed > 320 && timeElapsed < 1200) {
+              pdrState.current.lastStepTime = now;
+              setDetectionState("Step Triggered ✅");
 
-              const currentPos = positionRef.current;
-              const nextX = Math.max(30, Math.min(670, currentPos[0] + dx));
-              const nextY = Math.max(30, Math.min(450, currentPos[1] + dy));
-              
-              const nextPos = [nextX, nextY];
-              transmitLocation(nextPos, currentH);
-              return prevCount + 1;
-            });
+              setStepCount((prevCount) => {
+                const currentH = headingRef.current;
+                const rad = ((currentH - 90) * Math.PI) / 180;
+                const strideLength = 18; // Step scale in map pixels
 
-            setTimeout(() => setDetectionState("Auto-Detecting Step..."), 600);
+                const dx = Math.cos(rad) * strideLength;
+                const dy = Math.sin(rad) * strideLength;
+
+                const currentPos = positionRef.current;
+                const nextX = Math.max(30, Math.min(670, currentPos[0] + dx));
+                const nextY = Math.max(30, Math.min(450, currentPos[1] + dy));
+                
+                const nextPos = [nextX, nextY];
+                transmitLocation(nextPos, currentH);
+                return prevCount + 1;
+              });
+
+              setTimeout(() => setDetectionState("Tracking Walking..."), 400);
+            }
           }
         });
       };
@@ -191,7 +210,6 @@
       return (
         <div className="relative w-full h-full flex flex-col justify-between overflow-hidden bg-gray-950 text-white">
           
-          {/* Header Bar */}
           <header className="z-20 p-4 glass-card border-b border-gray-800 flex justify-between items-center shadow-2xl">
             <div>
               <h1 className="text-lg font-bold tracking-tight text-teal-400">Autonomous Indoor PDR</h1>
@@ -200,33 +218,31 @@
             
             <div className="flex items-center gap-2 bg-gray-900/80 px-3 py-1.5 rounded-full border border-gray-700">
               <span className={`w-2.5 h-2.5 rounded-full ${isConnected ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
-              <span className="text-xs font-semibold text-gray-300">{isConnected ? "PDR Live" : "Connecting..."}</span>
+              <span className="text-xs font-semibold text-gray-300">{isConnected ? "PDR Engine Online" : "Connecting..."}</span>
             </div>
           </header>
 
-          {/* Startup Overlay */}
           {!deviceRole && (
             <div className="absolute inset-0 z-30 flex items-center justify-center p-6 bg-gray-950/90 backdrop-blur-md">
               <div className="max-w-md w-full glass-card p-6 rounded-2xl border border-gray-800 text-center shadow-2xl">
                 <div className="w-12 h-12 bg-teal-500/10 text-teal-400 rounded-xl flex items-center justify-center mx-auto mb-4 border border-teal-500/20 text-2xl">
-                  🚀
+                  🚶‍♂️
                 </div>
-                <h2 className="text-xl font-bold mb-2">Initialize Autonomous Node</h2>
-                <p className="text-sm text-gray-400 mb-6">Zero manual inputs required. System operates continuously in real-time.</p>
+                <h2 className="text-xl font-bold mb-2">Initialize Walking Tracker</h2>
+                <p className="text-sm text-gray-400 mb-6">Autonomous motion processing enabled. Start walking normally once initialized.</p>
                 
                 <div className="space-y-3">
                   <button onClick={startHardwareSensors} className="w-full py-3.5 px-4 bg-teal-600 hover:bg-teal-500 text-white font-semibold rounded-xl transition-all shadow-lg active:scale-95">
-                    📱 Broadcaster (Enable Motion Sensors)
+                    📱 Broadcaster Node (Phone Hardware)
                   </button>
                   <button onClick={() => setDeviceRole("receiver")} className="w-full py-3.5 px-4 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 font-semibold rounded-xl transition-all active:scale-95">
-                    🖥️ Live Map Observer
+                    🖥️ Live Map Dashboard
                   </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Architectural SVG Map */}
           <main className="relative flex-1 w-full h-full bg-gray-950 flex items-center justify-center overflow-hidden">
             <svg viewBox="0 0 700 480" className="w-full h-full p-2 max-h-[85vh] object-contain">
               <defs>
@@ -271,7 +287,6 @@
                 );
               })}
 
-              {/* Peer Fleet Devices */}
               {Object.values(peerDevices).map((peer) => (
                 <g key={peer.userId}>
                   <circle cx={peer.position[0]} cy={peer.position[1]} r="14" fill="#3b82f6" opacity="0.25" />
@@ -282,7 +297,6 @@
                 </g>
               ))}
 
-              {/* User Marker */}
               <g filter="url(#glow)">
                 <circle cx={position[0]} cy={position[1]} r="22" fill="#0d9488" opacity="0.3" className="animate-ping" />
                 <circle cx={position[0]} cy={position[1]} r="10" fill="#14b8a6" stroke="#ffffff" strokeWidth="2.5" />
@@ -304,16 +318,15 @@
             </svg>
           </main>
 
-          {/* Footer Metrics */}
           {deviceRole && (
             <footer className="z-20 p-4 glass-card border-t border-gray-800 flex flex-col md:flex-row gap-4 items-center justify-between">
-              <div className="grid grid-cols-4 gap-2 w-full md:w-auto">
+              <div className="grid grid-cols-5 gap-2 w-full md:w-auto">
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
                   <span className="text-[10px] uppercase font-bold text-gray-400 block">Current Room</span>
                   <span className="text-xs font-bold text-teal-400 truncate block mt-0.5">{activeZone}</span>
                 </div>
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Real Steps</span>
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Steps</span>
                   <span className="text-xs font-bold text-teal-300 block mt-0.5">{stepCount}</span>
                 </div>
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
@@ -321,12 +334,15 @@
                   <span className="text-xs font-bold text-gray-200 block mt-0.5">{heading}°</span>
                 </div>
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Dynamic Force</span>
+                  <span className="text-xs font-bold text-amber-400 block mt-0.5">{liveAcc} m/s²</span>
+                </div>
+                <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
                   <span className="text-[10px] uppercase font-bold text-gray-400 block">Engine State</span>
-                  <span className="text-[11px] font-bold text-amber-400 truncate block mt-0.5">{detectionState}</span>
+                  <span className="text-[11px] font-bold text-emerald-400 truncate block mt-0.5">{detectionState}</span>
                 </div>
               </div>
 
-              {/* Manual Controls Backup */}
               <div className="flex items-center gap-2">
                 <div className="flex gap-1.5">
                   <button onClick={() => handleManualWalk("LEFT")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700">⬅️</button>
