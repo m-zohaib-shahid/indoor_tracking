@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Live Indoor Positioning</title>
+  <!-- React & Supabase CDNs -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body style="margin:0; background-color:#090d16;">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+    const { createClient } = supabase;
+
+    const SUPABASE_URL = "https://gnhkgjqiqeoraygzjikd.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImduaGtnanFpcWVvcmF5Z3pqaWtkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkzOTIxMzIsImV4cCI6MjEwNDk2ODEzMn0.AvHjI6gAQA-LnPJY99BtbDnB2ryKj7NXwkXIj7AI0Uk";
+    const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const styles = {
+      container: { fontFamily: "-apple-system, sans-serif", backgroundColor: "#090d16", color: "#f8fafc", minHeight: "100vh", padding: "16px" },
+      card: { backgroundColor: "#111827", borderRadius: "16px", border: "1px solid #1f2937", padding: "20px", marginBottom: "20px" },
+      btnPrimary: { backgroundColor: "#0d9488", color: "#ffffff", border: "none", padding: "14px 24px", borderRadius: "10px", fontWeight: "700", cursor: "pointer", width: "100%" },
+      btnNav: { backgroundColor: "#1f2937", color: "#f8fafc", border: "1px solid #374151", padding: "10px 16px", borderRadius: "8px", fontWeight: "600", cursor: "pointer" },
+      statBox: { backgroundColor: "#1f2937", padding: "16px", borderRadius: "12px", border: "1px solid #374151" },
+      badge: { backgroundColor: "#064e3b", color: "#34d399", padding: "4px 12px", borderRadius: "9999px", fontSize: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "6px" }
+    };
+
+    const BUILDING_LAYOUT = {
+      corridors: [
+        { id: "c1", p1: [100, 150], p2: [550, 150] },
+        { id: "c2", p1: [550, 150], p2: [550, 400] },
+        { id: "c3", p1: [100, 150], p2: [100, 400] },
+      ],
+      rooms: [
+        { name: "Room 101", bounds: { x: 40, y: 300, w: 120, h: 120 }, center: [100, 360] },
+        { name: "Room 102", bounds: { x: 250, y: 30, w: 140, h: 90 }, center: [320, 75] },
+        { name: "Room 103 (Lab)", bounds: { x: 490, y: 300, w: 120, h: 120 }, center: [550, 360] },
+        { name: "Main Hallway", bounds: { x: 150, y: 120, w: 400, h: 60 }, center: [350, 150] },
+      ]
+    };
+
+    const mapMatchPoint = (point) => {
+      let minDistance = Infinity;
+      let snapped = point;
+      BUILDING_LAYOUT.corridors.forEach((seg) => {
+        const l2 = (seg.p2[0] - seg.p1[0]) ** 2 + (seg.p2[1] - seg.p1[1]) ** 2;
+        let t = ((point[0] - seg.p1[0]) * (seg.p2[0] - seg.p1[0]) + (point[1] - seg.p1[1]) * (seg.p2[1] - seg.p1[1])) / l2;
+        t = Math.max(0, Math.min(1, t));
+        const projX = seg.p1[0] + t * (seg.p2[0] - seg.p1[0]);
+        const projY = seg.p1[1] + t * (seg.p2[1] - seg.p1[1]);
+        const dist = Math.hypot(point[0] - projX, point[1] - projY);
+        if (dist < minDistance) { minDistance = dist; snapped = [projX, projY]; }
+      });
+      let currentRoom = "Corridor Area";
+      BUILDING_LAYOUT.rooms.forEach((room) => {
+        const { x, y, w, h } = room.bounds;
+        if (snapped[0] >= x && snapped[0] <= x + w && snapped[1] >= y && snapped[1] <= y + h) {
+          currentRoom = room.name;
+        }
+      });
+      return { snapped, currentRoom };
+    };
+
+    function App() {
+      const [deviceRole, setDeviceRole] = useState(null);
+      const [userId] = useState(`USER-${Math.floor(1000 + Math.random() * 9000)}`);
+      const [position, setPosition] = useState([100, 150]);
+      const [heading, setHeading] = useState(0);
+      const [activeZone, setActiveZone] = useState("Room 101 Entrance");
+      const [stepCount, setStepCount] = useState(0);
+      const [peerDevices, setPeerDevices] = useState({});
+      const [isConnected, setIsConnected] = useState(false);
+      const accelRef = useRef({ lastZ: 9.81, threshold: 2.5 });
+      const channelRef = useRef(null);
+
+      useEffect(() => {
+        const channel = supabaseClient.channel("indoor_tracking_room", { config: { broadcast: { self: false } } });
+        channel.on("broadcast", { event: "location_update" }, (payload) => {
+          if (payload.payload && payload.payload.userId !== userId) {
+            setPeerDevices((prev) => ({ ...prev, [payload.payload.userId]: payload.payload }));
+          }
+        }).subscribe((status) => {
+          if (status === "SUBSCRIBED") setIsConnected(true);
+        });
+        channelRef.current = channel;
+        return () => { supabaseClient.removeChannel(channel); };
+      }, [userId]);
+
+      const transmitLocation = (newPos, currentHeading) => {
+        const { snapped, currentRoom } = mapMatchPoint(newPos);
+        setPosition(snapped);
+        setActiveZone(currentRoom);
+        const payload = { userId, position: snapped, heading: currentHeading, room: currentRoom, timestamp: new Date().toLocaleTimeString() };
+        if (channelRef.current && isConnected) {
+          channelRef.current.send({ type: "broadcast", event: "location_update", payload });
+        }
+      };
+
+      const startHardwareSensors = async () => {
+        setDeviceRole("broadcaster");
+        if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+          try { await DeviceMotionEvent.requestPermission(); } catch (e) {}
+        }
+        window.addEventListener("devicemotion", (e) => {
+          const acc = e.accelerationIncludingGravity;
+          if (!acc) return;
+          const currentZ = acc.z || 9.81;
+          const delta = Math.abs(currentZ - accelRef.current.lastZ);
+          accelRef.current.lastZ = currentZ;
+          if (delta > accelRef.current.threshold) {
+            setStepCount((prev) => {
+              const rad = (heading * Math.PI) / 180;
+              const dx = Math.cos(rad) * 15;
+              const dy = Math.sin(rad) * 15;
+              setPosition((prevPos) => {
+                const rawNext = [prevPos[0] + dx, prevPos[1] + dy];
+                transmitLocation(rawNext, heading);
+                return rawNext;
+              });
+              return prev + 1;
+            });
+          }
+        });
+        window.addEventListener("deviceorientation", (e) => {
+          if (e.alpha !== null) setHeading(Math.round(e.alpha));
+        });
+      };
+
+      const handleManualWalk = (dir) => {
+        const stepSize = 16;
+        let dx = 0, dy = 0, newHeading = heading;
+        if (dir === "UP") { dy = -stepSize; newHeading = 270; }
+        if (dir === "DOWN") { dy = stepSize; newHeading = 90; }
+        if (dir === "LEFT") { dx = -stepSize; newHeading = 180; }
+        if (dir === "RIGHT") { dx = stepSize; newHeading = 0; }
+        setHeading(newHeading);
+        setStepCount((s) => s + 1);
+        const newPos = [position[0] + dx, position[1] + dy];
+        transmitLocation(newPos, newHeading);
+      };
+
+      return (
+        <div style={styles.container}>
+          <div style={{ ...styles.card, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <h1 style={{ margin: 0, fontSize: "20px" }}>Live Indoor Positioning System</h1>
+              <p style={{ margin: "4px 0 0 0", color: "#9ca3af", fontSize: "13px" }}>Real-Time PDR Tracking</p>
+            </div>
+            <span style={styles.badge}>
+              <span style={{ width: "8px", height: "8px", borderRadius: "50%", backgroundColor: isConnected ? "#34d399" : "#f87171", display: "inline-block" }}></span>
+              {isConnected ? "Supabase Live Connected" : "Connecting..."}
+            </span>
+          </div>
+
+          {!deviceRole && (
+            <div style={styles.card}>
+              <h2 style={{ fontSize: "18px", marginTop: 0 }}>Select Device Mode</h2>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                <button onClick={startHardwareSensors} style={styles.btnPrimary}>📱 Track My Device</button>
+                <button onClick={() => setDeviceRole("receiver")} style={{ ...styles.btnPrimary, backgroundColor: "#3b82f6" }}>🖥️ Monitor Other Devices</button>
+              </div>
+            </div>
+          )}
+
+          {deviceRole && (
+            <div>
+              <div style={styles.card}>
+                <div style={{ backgroundColor: "#030712", borderRadius: "12px", padding: "10px" }}>
+                  <svg viewBox="0 0 700 500" style={{ width: "100%", height: "auto" }}>
+                    <rect width="100%" height="100%" fill="#030712" />
+                    {BUILDING_LAYOUT.rooms.map((room, i) => (
+                      <g key={i}>
+                        <rect x={room.bounds.x} y={room.bounds.y} width={room.bounds.w} height={room.bounds.h} fill="#111827" stroke="#374151" strokeWidth="2" rx="6" />
+                        <text x={room.center[0]} y={room.center[1]} textAnchor="middle" fill="#6b7280" fontSize="13" fontWeight="bold">{room.name}</text>
+                      </g>
+                    ))}
+                    <line x1="100" y1="150" x2="550" y2="150" stroke="#1f2937" strokeWidth="40" strokeLinecap="round" />
+                    <line x1="550" y1="150" x2="550" y2="400" stroke="#1f2937" strokeWidth="40" strokeLinecap="round" />
+                    <line x1="100" y1="150" x2="100" y2="400" stroke="#1f2937" strokeWidth="40" strokeLinecap="round" />
+
+                    {Object.values(peerDevices).map((peer) => (
+                      <g key={peer.userId}>
+                        <circle cx={peer.position[0]} cy={peer.position[1]} r="10" fill="#3b82f6" />
+                        <text x={peer.position[0]} y={peer.position[1] - 16} textAnchor="middle" fill="#60a5fa" fontSize="11">{peer.userId} ({peer.room})</text>
+                      </g>
+                    ))}
+
+                    <g>
+                      <circle cx={position[0]} cy={position[1]} r="10" fill="#0d9488" />
+                      <text x={position[0]} y={position[1] - 18} textAnchor="middle" fill="#2dd4bf" fontSize="12" fontWeight="bold">YOU ({activeZone})</text>
+                    </g>
+                  </svg>
+                </div>
+
+                <div style={{ marginTop: "16px", textAlign: "center" }}>
+                  <div style={{ display: "flex", gap: "8px", justifyContent: "center" }}>
+                    <button onClick={() => handleManualWalk("LEFT")} style={styles.btnNav}>⬅️ West</button>
+                    <button onClick={() => handleManualWalk("UP")} style={styles.btnNav}>⬆️ North</button>
+                    <button onClick={() => handleManualWalk("DOWN")} style={styles.btnNav}>⬇️ South</button>
+                    <button onClick={() => handleManualWalk("RIGHT")} style={styles.btnNav}>➡️ East</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
