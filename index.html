@@ -13,26 +13,9 @@
   <script src="https://cdn.tailwindcss.com"></script>
 
   <style>
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-      user-select: none;
-      -webkit-tap-highlight-color: transparent;
-    }
-    body, html, #root {
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-      background-color: #030712;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    }
-    .glass-card {
-      background: rgba(17, 24, 39, 0.75);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-tap-highlight-color: transparent; }
+    body, html, #root { width: 100%; height: 100%; overflow: hidden; background-color: #030712; font-family: system-ui, -apple-system, sans-serif; }
+    .glass-card { background: rgba(17, 24, 39, 0.75); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.1); }
   </style>
 </head>
 <body>
@@ -42,7 +25,6 @@
     const { useState, useEffect, useRef } = React;
     const { createClient } = supabase;
 
-    // Supabase Live Instance
     const SUPABASE_URL = "https://gnhkgjqiqeoraygzjikd.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImduaGtnanFpcWVvcmF5Z3pqaWtkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkzOTIxMzIsImV4cCI6MjEwNDk2ODEzMn0.AvHjI6gAQA-LnPJY99BtbDnB2ryKj7NXwkXIj7AI0Uk";
     const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -91,9 +73,22 @@
       const [stepCount, setStepCount] = useState(0);
       const [peerDevices, setPeerDevices] = useState({});
       const [isConnected, setIsConnected] = useState(false);
-      const accelRef = useRef({ lastZ: 9.81, threshold: 2.5 });
+      const [sensorActive, setSensorActive] = useState(false);
+      
+      const accelRef = useRef({ lastMagnitude: 0, lastStepTime: 0 });
       const channelRef = useRef(null);
+      const headingRef = useRef(0);
+      const positionRef = useRef([100, 150]);
 
+      useEffect(() => {
+        positionRef.current = position;
+      }, [position]);
+
+      useEffect(() => {
+        headingRef.current = heading;
+      }, [heading]);
+
+      // Realtime Peer Subscriptions
       useEffect(() => {
         const channel = supabaseClient.channel("indoor_tracking_room", { config: { broadcast: { self: false } } });
         channel.on("broadcast", { event: "location_update" }, (payload) => {
@@ -117,33 +112,72 @@
         }
       };
 
+      // Hardware Sensors Activation Handler
       const startHardwareSensors = async () => {
         setDeviceRole("broadcaster");
+
+        // 1. Request Permission for iOS 13+ Devices
         if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
-          try { await DeviceMotionEvent.requestPermission(); } catch (e) {}
+          try {
+            const motionPermission = await DeviceMotionEvent.requestPermission();
+            const orientationPermission = await DeviceOrientationEvent.requestPermission();
+            if (motionPermission !== "granted" || orientationPermission !== "granted") {
+              alert("Sensor permissions are required for live positioning!");
+              return;
+            }
+          } catch (e) {
+            console.error("Sensor Permission Error:", e);
+          }
         }
+
+        setSensorActive(true);
+
+        // 2. Gyroscope / Compass (Heading Angle)
+        window.addEventListener("deviceorientation", (e) => {
+          let dir = 0;
+          if (e.webkitCompassHeading) {
+            dir = e.webkitCompassHeading; // iOS Compass
+          } else if (e.alpha !== null) {
+            dir = 360 - e.alpha; // Android Gyro
+          }
+          const finalHeading = Math.round(dir);
+          setHeading(finalHeading);
+        });
+
+        // 3. Accelerometer (PDR Step Detector)
         window.addEventListener("devicemotion", (e) => {
           const acc = e.accelerationIncludingGravity;
           if (!acc) return;
-          const currentZ = acc.z || 9.81;
-          const delta = Math.abs(currentZ - accelRef.current.lastZ);
-          accelRef.current.lastZ = currentZ;
-          if (delta > accelRef.current.threshold) {
+
+          const x = acc.x || 0;
+          const y = acc.y || 0;
+          const z = acc.z || 0;
+
+          // Magnitude Calculation
+          const magnitude = Math.sqrt(x * x + y * y + z * z);
+          const delta = Math.abs(magnitude - accelRef.current.lastMagnitude);
+          accelRef.current.lastMagnitude = magnitude;
+
+          const now = Date.now();
+          // Step Threshold: Spike Detection (> 2.8 m/s²) & Minimum delay between steps (350ms)
+          if (delta > 2.8 && (now - accelRef.current.lastStepTime) > 350) {
+            accelRef.current.lastStepTime = now;
+
             setStepCount((prev) => {
-              const rad = (heading * Math.PI) / 180;
+              const currentH = headingRef.current;
+              const rad = (currentH * Math.PI) / 180;
+              
+              // Move 15 units in vector heading direction
               const dx = Math.cos(rad) * 15;
               const dy = Math.sin(rad) * 15;
-              setPosition((prevPos) => {
-                const rawNext = [prevPos[0] + dx, prevPos[1] + dy];
-                transmitLocation(rawNext, heading);
-                return rawNext;
-              });
+              
+              const currentPos = positionRef.current;
+              const rawNext = [currentPos[0] + dx, currentPos[1] + dy];
+              
+              transmitLocation(rawNext, currentH);
               return prev + 1;
             });
           }
-        });
-        window.addEventListener("deviceorientation", (e) => {
-          if (e.alpha !== null) setHeading(Math.round(e.alpha));
         });
       };
 
@@ -171,11 +205,11 @@
             </div>
             <div className="flex items-center gap-2 bg-gray-900/80 px-3 py-1.5 rounded-full border border-gray-700">
               <span className={`w-2.5 h-2.5 rounded-full ${isConnected ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
-              <span className="text-xs font-semibold text-gray-300">{isConnected ? "Live Network" : "Connecting..."}</span>
+              <span className="text-xs font-semibold text-gray-300">{isConnected ? (sensorActive ? "Sensors Live ⚡" : "Live Network") : "Connecting..."}</span>
             </div>
           </header>
 
-          {/* Device Role Selection Overlay */}
+          {/* Mode Selection */}
           {!deviceRole && (
             <div className="absolute inset-0 z-30 flex items-center justify-center p-6 bg-gray-950/90 backdrop-blur-md">
               <div className="max-w-md w-full glass-card p-6 rounded-2xl border border-gray-800 text-center shadow-2xl">
@@ -187,7 +221,7 @@
                 
                 <div className="space-y-3">
                   <button onClick={startHardwareSensors} className="w-full py-3.5 px-4 bg-teal-600 hover:bg-teal-500 text-white font-semibold rounded-xl transition-all shadow-lg active:scale-95">
-                    📱 Broadcaster (Track This Phone)
+                    📱 Broadcaster (Enable Hardware Sensors)
                   </button>
                   <button onClick={() => setDeviceRole("receiver")} className="w-full py-3.5 px-4 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 font-semibold rounded-xl transition-all active:scale-95">
                     🖥️ Observer (Monitor Fleet)
@@ -197,7 +231,7 @@
             </div>
           )}
 
-          {/* Full-Screen Vector Map Container */}
+          {/* Map */}
           <main className="relative flex-1 w-full h-full bg-gray-950 flex items-center justify-center overflow-hidden">
             <svg viewBox="0 0 700 480" className="w-full h-full p-2 max-h-[85vh] object-contain">
               <defs>
@@ -210,39 +244,23 @@
                 </filter>
               </defs>
 
-              {/* Grid Background */}
               <rect width="100%" height="100%" fill="url(#grid)" />
 
-              {/* Corridors */}
               <line x1="100" y1="150" x2="550" y2="150" stroke="#1f2937" strokeWidth="48" strokeLinecap="round" />
               <line x1="550" y1="150" x2="550" y2="400" stroke="#1f2937" strokeWidth="48" strokeLinecap="round" />
               <line x1="100" y1="150" x2="100" y2="400" stroke="#1f2937" strokeWidth="48" strokeLinecap="round" />
 
-              {/* Inner Corridor Lines */}
               <line x1="100" y1="150" x2="550" y2="150" stroke="#374151" strokeWidth="2" strokeDasharray="6,6" />
               <line x1="550" y1="150" x2="550" y2="400" stroke="#374151" strokeWidth="2" strokeDasharray="6,6" />
               <line x1="100" y1="150" x2="100" y2="400" stroke="#374151" strokeWidth="2" strokeDasharray="6,6" />
 
-              {/* Rooms */}
               {BUILDING_LAYOUT.rooms.map((room, i) => (
                 <g key={i}>
-                  <rect
-                    x={room.bounds.x}
-                    y={room.bounds.y}
-                    width={room.bounds.w}
-                    height={room.bounds.h}
-                    fill="#111827"
-                    stroke="#374151"
-                    strokeWidth="2.5"
-                    rx="12"
-                  />
-                  <text x={room.center[0]} y={room.center[1]} textAnchor="middle" fill="#9ca3af" fontSize="13" fontWeight="700">
-                    {room.name}
-                  </text>
+                  <rect x={room.bounds.x} y={room.bounds.y} width={room.bounds.w} height={room.bounds.h} fill="#111827" stroke="#374151" strokeWidth="2.5" rx="12" />
+                  <text x={room.center[0]} y={room.center[1]} textAnchor="middle" fill="#9ca3af" fontSize="13" fontWeight="700">{room.name}</text>
                 </g>
               ))}
 
-              {/* Peer Devices */}
               {Object.values(peerDevices).map((peer) => (
                 <g key={peer.userId}>
                   <circle cx={peer.position[0]} cy={peer.position[1]} r="16" fill="#3b82f6" opacity="0.25" />
@@ -253,7 +271,6 @@
                 </g>
               ))}
 
-              {/* Active User Marker */}
               <g filter="url(#glow)">
                 <circle cx={position[0]} cy={position[1]} r="22" fill="#0d9488" opacity="0.35" className="animate-ping" />
                 <circle cx={position[0]} cy={position[1]} r="10" fill="#14b8a6" stroke="#ffffff" strokeWidth="2.5" />
@@ -264,11 +281,9 @@
             </svg>
           </main>
 
-          {/* Bottom Control Overlay Dashboard */}
+          {/* Footer Controls */}
           {deviceRole && (
             <footer className="z-20 p-4 glass-card border-t border-gray-800 flex flex-col md:flex-row gap-4 items-center justify-between">
-              
-              {/* Telemetry Data */}
               <div className="grid grid-cols-3 gap-3 w-full md:w-auto">
                 <div className="bg-gray-900/90 border border-gray-800 p-2.5 rounded-xl text-center">
                   <span className="text-[10px] uppercase font-bold text-gray-400 block">Zone</span>
@@ -284,7 +299,6 @@
                 </div>
               </div>
 
-              {/* Manual Walk Touch Pad */}
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-400 font-semibold hidden sm:inline">Manual Control:</span>
                 <div className="flex gap-1.5">
@@ -294,7 +308,6 @@
                   <button onClick={() => handleManualWalk("RIGHT")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700 transition-all">➡️</button>
                 </div>
               </div>
-
             </footer>
           )}
 
