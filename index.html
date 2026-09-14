@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Autonomous Enterprise Indoor PDR Map</title>
-  
+
   <!-- CDN Dependencies -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -28,6 +28,15 @@
     const SUPABASE_URL = "https://gnhkgjqiqeoraygzjikd.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImduaGtnanFpcWVvcmF5Z3pqaWtkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkzOTIxMzIsImV4cCI6MjEwNDk2ODEzMn0.AvHjI6gAQA-LnPJY99BtbDnB2ryKj7NXwkXIj7AI0Uk";
     const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // ---- Step-detection tuning constants (adjust these if a specific phone
+    // needs recalibrating — see the on-screen "Delta" readout while testing) ----
+    const STEP_THRESHOLD = 1.4;   // dynamic accel (m/s^2) that counts as "rising edge"
+    const RESET_THRESHOLD = 0.8;  // must fall back below this to arm the next step
+    const MAX_DELTA = 6.0;        // reject spikes bigger than this (hard slam / drop)
+    const MIN_STEP_INTERVAL = 320;  // ms — fastest plausible human stride
+    const MAX_STEP_INTERVAL = 1200; // ms — beyond this, treat as "stopped, restart clock"
+    const BASELINE_ALPHA = 0.85;    // low-pass filter smoothing for gravity baseline
 
     const BUILDING_LAYOUT = {
       rooms: [
@@ -56,20 +65,34 @@
       const [isConnected, setIsConnected] = useState(false);
       const [detectionState, setDetectionState] = useState("Engine Ready");
       const [liveAcc, setLiveAcc] = useState(0);
+      const [sensorPermissionError, setSensorPermissionError] = useState(null);
 
+      // BUG FIX #1: lastStepTime must start as null, not 0. With 0, the very
+      // first "elapsed = now - lastStepTime" is astronomically large, so the
+      // timing-window check (elapsed < 1200) NEVER passes — meaning no step
+      // could ever be confirmed, no matter how the phone moved.
       const pdrState = useRef({
         baseline: 9.8,
         filteredMagnitude: 9.8,
-        lastStepTime: 0,
+        lastStepTime: null,
         isAboveThreshold: false
       });
 
       const channelRef = useRef(null);
       const headingRef = useRef(0);
       const positionRef = useRef([120, 405]);
+      // BUG FIX #2: isConnected as plain state is captured in a STALE CLOSURE
+      // inside the devicemotion listener (which is attached only once). Even
+      // after the channel finishes subscribing and isConnected flips to true
+      // in React state, the listener's captured copy stays false forever, so
+      // it silently never broadcasts to other devices. A ref always reads the
+      // current value, so we mirror isConnected into a ref and read the ref
+      // inside the listener instead.
+      const isConnectedRef = useRef(false);
 
       useEffect(() => { positionRef.current = position; }, [position]);
       useEffect(() => { headingRef.current = heading; }, [heading]);
+      useEffect(() => { isConnectedRef.current = isConnected; }, [isConnected]);
 
       useEffect(() => {
         const channel = supabaseClient.channel("indoor_tracking_room", { config: { broadcast: { self: false } } });
@@ -79,6 +102,7 @@
           }
         }).subscribe((status) => {
           if (status === "SUBSCRIBED") setIsConnected(true);
+          if (status === "CLOSED" || status === "CHANNEL_ERROR" || status === "TIMED_OUT") setIsConnected(false);
         });
         channelRef.current = channel;
         return () => { supabaseClient.removeChannel(channel); };
@@ -95,25 +119,39 @@
         return zone;
       };
 
+      // Uses the ref (always current) instead of the closed-over state value.
       const transmitLocation = (newPos, currentHeading) => {
         const room = calculateZone(newPos);
         setPosition(newPos);
         setActiveZone(room);
         const payload = { userId, position: newPos, heading: currentHeading, room, timestamp: new Date().toLocaleTimeString() };
-        if (channelRef.current && isConnected) {
+        if (channelRef.current && isConnectedRef.current) {
           channelRef.current.send({ type: "broadcast", event: "location_update", payload });
         }
       };
 
       const startHardwareSensors = async () => {
         setDeviceRole("broadcaster");
+        setSensorPermissionError(null);
+
+        // Reset the detector to a clean state every time tracking (re)starts,
+        // otherwise a stale lastStepTime from a previous session could make
+        // the very next elapsed-time check behave unpredictably.
+        pdrState.current = { baseline: 9.8, filteredMagnitude: 9.8, lastStepTime: null, isAboveThreshold: false };
 
         if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
           try {
-            await DeviceMotionEvent.requestPermission();
-            await DeviceOrientationEvent.requestPermission();
+            const motionPerm = await DeviceMotionEvent.requestPermission();
+            const orientPerm = typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function"
+              ? await DeviceOrientationEvent.requestPermission()
+              : "granted";
+            if (motionPerm !== "granted" || orientPerm !== "granted") {
+              setSensorPermissionError("Motion/orientation permission was denied. Enable it in Settings > Safari > Motion & Orientation Access, then reload.");
+              return;
+            }
           } catch (e) {
-            console.error(e);
+            setSensorPermissionError("Could not request sensor permission: " + e.message);
+            return;
           }
         }
 
@@ -134,7 +172,8 @@
           setHeading(smoothedHeading);
         });
 
-        // Dynamic Peak-Detection Step Engine
+        // Step-detection engine (verified against synthetic walking / shaking /
+        // idle test patterns before shipping — see test_step_detector.js)
         window.addEventListener("devicemotion", (e) => {
           let acc = e.accelerationIncludingGravity;
           if (!acc || acc.x === null) acc = e.acceleration;
@@ -144,37 +183,48 @@
           const y = acc.y || 0;
           const z = acc.z || 0;
 
-          // Compute total 3D acceleration magnitude
           const rawMag = Math.sqrt(x * x + y * y + z * z);
-          
-          // Low-pass exponential filter for continuous baseline tracking
-          const alpha = 0.85;
-          pdrState.current.filteredMagnitude = (alpha * pdrState.current.filteredMagnitude) + ((1 - alpha) * rawMag);
-          
+
+          pdrState.current.filteredMagnitude = (BASELINE_ALPHA * pdrState.current.filteredMagnitude) + ((1 - BASELINE_ALPHA) * rawMag);
           const delta = Math.abs(rawMag - pdrState.current.filteredMagnitude);
           setLiveAcc(delta.toFixed(1));
 
           const now = Date.now();
-          const timeElapsed = now - pdrState.current.lastStepTime;
 
-          // Dynamic Step Detection Trigger Logic:
-          // 1. Minimum relative dynamic force: 1.6 m/s^2 (sensitive enough for walking, ignores idle shaking)
-          // 2. Human stride time frame window: 300ms to 1200ms
-          if (delta > 1.6 && !pdrState.current.isAboveThreshold) {
+          if (delta > STEP_THRESHOLD && delta < MAX_DELTA && !pdrState.current.isAboveThreshold) {
             pdrState.current.isAboveThreshold = true;
           }
 
-          if (delta < 1.0 && pdrState.current.isAboveThreshold) {
+          if (delta < RESET_THRESHOLD && pdrState.current.isAboveThreshold) {
             pdrState.current.isAboveThreshold = false;
 
-            if (timeElapsed > 320 && timeElapsed < 1200) {
+            const last = pdrState.current.lastStepTime;
+            let shouldStep = false;
+
+            if (last === null) {
+              // very first candidate step of this session — accept it and
+              // start the cadence clock from here
+              shouldStep = true;
+            } else {
+              const elapsed = now - last;
+              if (elapsed >= MIN_STEP_INTERVAL && elapsed <= MAX_STEP_INTERVAL) {
+                shouldStep = true;
+              } else if (elapsed > MAX_STEP_INTERVAL) {
+                // long pause since the last step (person stood still) —
+                // don't count this as a step, but restart the clock from here
+                pdrState.current.lastStepTime = now;
+              }
+              // elapsed < MIN_STEP_INTERVAL: noise/bounce, ignore entirely
+            }
+
+            if (shouldStep) {
               pdrState.current.lastStepTime = now;
-              setDetectionState("Step Triggered ✅");
+              setDetectionState("Step Triggered \u2705");
 
               setStepCount((prevCount) => {
                 const currentH = headingRef.current;
                 const rad = ((currentH - 90) * Math.PI) / 180;
-                const strideLength = 18; // Step scale in map pixels
+                const strideLength = 18;
 
                 const dx = Math.cos(rad) * strideLength;
                 const dy = Math.sin(rad) * strideLength;
@@ -182,7 +232,7 @@
                 const currentPos = positionRef.current;
                 const nextX = Math.max(30, Math.min(670, currentPos[0] + dx));
                 const nextY = Math.max(30, Math.min(450, currentPos[1] + dy));
-                
+
                 const nextPos = [nextX, nextY];
                 transmitLocation(nextPos, currentH);
                 return prevCount + 1;
@@ -207,18 +257,20 @@
         transmitLocation(newPos, newHeading);
       };
 
+      const peerCount = Object.keys(peerDevices).length;
+
       return (
         <div className="relative w-full h-full flex flex-col justify-between overflow-hidden bg-gray-950 text-white">
-          
+
           <header className="z-20 p-4 glass-card border-b border-gray-800 flex justify-between items-center shadow-2xl">
             <div>
               <h1 className="text-lg font-bold tracking-tight text-teal-400">Autonomous Indoor PDR</h1>
               <p className="text-xs text-gray-400">Node ID: <span className="text-gray-200 font-mono">{userId}</span></p>
             </div>
-            
+
             <div className="flex items-center gap-2 bg-gray-900/80 px-3 py-1.5 rounded-full border border-gray-700">
               <span className={`w-2.5 h-2.5 rounded-full ${isConnected ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
-              <span className="text-xs font-semibold text-gray-300">{isConnected ? "PDR Engine Online" : "Connecting..."}</span>
+              <span className="text-xs font-semibold text-gray-300">{isConnected ? "Realtime Connected" : "Connecting..."}</span>
             </div>
           </header>
 
@@ -230,7 +282,13 @@
                 </div>
                 <h2 className="text-xl font-bold mb-2">Initialize Walking Tracker</h2>
                 <p className="text-sm text-gray-400 mb-6">Autonomous motion processing enabled. Start walking normally once initialized.</p>
-                
+
+                {sensorPermissionError && (
+                  <div className="mb-4 p-3 rounded-lg bg-rose-950/60 border border-rose-800 text-rose-300 text-xs text-left">
+                    {sensorPermissionError}
+                  </div>
+                )}
+
                 <div className="space-y-3">
                   <button onClick={startHardwareSensors} className="w-full py-3.5 px-4 bg-teal-600 hover:bg-teal-500 text-white font-semibold rounded-xl transition-all shadow-lg active:scale-95">
                     📱 Broadcaster Node (Phone Hardware)
@@ -239,11 +297,21 @@
                     🖥️ Live Map Dashboard
                   </button>
                 </div>
+                <p className="text-[11px] text-gray-500 mt-4 leading-relaxed">
+                  Both devices must open this exact page from the same hosted link
+                  (not a local file) for the dashboard to receive the phone's updates.
+                </p>
               </div>
             </div>
           )}
 
           <main className="relative flex-1 w-full h-full bg-gray-950 flex items-center justify-center overflow-hidden">
+            {deviceRole === "receiver" && peerCount === 0 && (
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 glass-card px-4 py-2 rounded-full border border-amber-700/40 text-amber-300 text-xs font-semibold">
+                Waiting for a broadcaster device to connect...
+              </div>
+            )}
+
             <svg viewBox="0 0 700 480" className="w-full h-full p-2 max-h-[85vh] object-contain">
               <defs>
                 <pattern id="grid" width="35" height="35" patternUnits="userSpaceOnUse">
@@ -263,18 +331,18 @@
               ))}
 
               {BUILDING_LAYOUT.rooms.map((room) => {
-                const isUserInRoom = activeZone === room.name;
+                const isUserInRoom = deviceRole === "broadcaster" && activeZone === room.name;
                 return (
                   <g key={room.id}>
-                    <rect 
-                      x={room.bounds.x} 
-                      y={room.bounds.y} 
-                      width={room.bounds.w} 
-                      height={room.bounds.h} 
-                      fill={room.color} 
-                      stroke={isUserInRoom ? "#2dd4bf" : "#334155"} 
-                      strokeWidth={isUserInRoom ? "2.5" : "1.5"} 
-                      rx="8" 
+                    <rect
+                      x={room.bounds.x}
+                      y={room.bounds.y}
+                      width={room.bounds.w}
+                      height={room.bounds.h}
+                      fill={room.color}
+                      stroke={isUserInRoom ? "#2dd4bf" : "#334155"}
+                      strokeWidth={isUserInRoom ? "2.5" : "1.5"}
+                      rx="8"
                     />
                     <circle cx={room.center[0]} cy={room.bounds.y + room.bounds.h} r="3" fill="#64748b" />
                     <text x={room.center[0]} y={room.center[1] - 4} textAnchor="middle" fill={isUserInRoom ? "#5eead4" : "#94a3b8"} fontSize="12" fontWeight="700">
@@ -297,28 +365,33 @@
                 </g>
               ))}
 
-              <g filter="url(#glow)">
-                <circle cx={position[0]} cy={position[1]} r="22" fill="#0d9488" opacity="0.3" className="animate-ping" />
-                <circle cx={position[0]} cy={position[1]} r="10" fill="#14b8a6" stroke="#ffffff" strokeWidth="2.5" />
-                
-                <line 
-                  x1={position[0]} 
-                  y1={position[1]} 
-                  x2={position[0] + Math.cos(((heading - 90) * Math.PI) / 180) * 22} 
-                  y2={position[1] + Math.sin(((heading - 90) * Math.PI) / 180) * 22} 
-                  stroke="#5eead4" 
-                  strokeWidth="3.5" 
-                  strokeLinecap="round" 
-                />
+              {/* Only the broadcaster (the phone that's actually walking) shows
+                  its own "YOU" marker. On the receiver dashboard this stayed
+                  frozen at the entrance forever and just added clutter. */}
+              {deviceRole === "broadcaster" && (
+                <g filter="url(#glow)">
+                  <circle cx={position[0]} cy={position[1]} r="22" fill="#0d9488" opacity="0.3" className="animate-ping" />
+                  <circle cx={position[0]} cy={position[1]} r="10" fill="#14b8a6" stroke="#ffffff" strokeWidth="2.5" />
 
-                <text x={position[0]} y={position[1] - 24} textAnchor="middle" fill="#2dd4bf" fontSize="11" fontWeight="800">
-                  YOU ({activeZone})
-                </text>
-              </g>
+                  <line
+                    x1={position[0]}
+                    y1={position[1]}
+                    x2={position[0] + Math.cos(((heading - 90) * Math.PI) / 180) * 22}
+                    y2={position[1] + Math.sin(((heading - 90) * Math.PI) / 180) * 22}
+                    stroke="#5eead4"
+                    strokeWidth="3.5"
+                    strokeLinecap="round"
+                  />
+
+                  <text x={position[0]} y={position[1] - 24} textAnchor="middle" fill="#2dd4bf" fontSize="11" fontWeight="800">
+                    YOU ({activeZone})
+                  </text>
+                </g>
+              )}
             </svg>
           </main>
 
-          {deviceRole && (
+          {deviceRole === "broadcaster" && (
             <footer className="z-20 p-4 glass-card border-t border-gray-800 flex flex-col md:flex-row gap-4 items-center justify-between">
               <div className="grid grid-cols-5 gap-2 w-full md:w-auto">
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
@@ -334,7 +407,7 @@
                   <span className="text-xs font-bold text-gray-200 block mt-0.5">{heading}°</span>
                 </div>
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Dynamic Force</span>
+                  <span className="text-[10px] uppercase font-bold text-gray-400 block">Delta (live)</span>
                   <span className="text-xs font-bold text-amber-400 block mt-0.5">{liveAcc} m/s²</span>
                 </div>
                 <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-xl text-center">
@@ -343,7 +416,8 @@
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-col items-center gap-1">
+                <span className="text-[10px] text-gray-500 uppercase font-bold">Manual override (testing)</span>
                 <div className="flex gap-1.5">
                   <button onClick={() => handleManualWalk("LEFT")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700">⬅️</button>
                   <button onClick={() => handleManualWalk("UP")} className="w-10 h-10 bg-gray-800 hover:bg-gray-700 active:scale-90 text-lg rounded-xl flex items-center justify-center border border-gray-700">⬆️</button>
