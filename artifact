@@ -8,7 +8,6 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // Initialize Live Supabase Client
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// Clean, Modern Dark Mode Styling (Zero External CSS Required)
 const styles = {
   container: {
     fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
@@ -66,7 +65,6 @@ const styles = {
   }
 };
 
-// Building Layout Segments (Corridors & Rooms)
 const BUILDING_LAYOUT = {
   corridors: [
     { id: "c1", p1: [100, 150], p2: [550, 150] },
@@ -81,7 +79,6 @@ const BUILDING_LAYOUT = {
   ]
 };
 
-// Map Matching Vector Projection Snapping Algorithm
 const mapMatchPoint = (point) => {
   let minDistance = Infinity;
   let snapped = point;
@@ -101,7 +98,6 @@ const mapMatchPoint = (point) => {
     }
   });
 
-  // Identify Current Active Room
   let currentRoom = "Corridor Area";
   BUILDING_LAYOUT.rooms.forEach((room) => {
     const { x, y, w, h } = room.bounds;
@@ -113,11 +109,10 @@ const mapMatchPoint = (point) => {
   return { snapped, currentRoom };
 };
 
-export default function IndoorTrackingSystem() {
-  const [deviceRole, setDeviceRole] = useState(null); // 'broadcaster' | 'receiver'
+export default function App() {
+  const [deviceRole, setDeviceRole] = useState(null);
   const [userId] = useState(`USER-${Math.floor(1000 + Math.random() * 9000)}`);
   
-  // Real-time State
   const [position, setPosition] = useState([100, 150]);
   const [heading, setHeading] = useState(0);
   const [activeZone, setActiveZone] = useState("Room 101 Entrance");
@@ -128,7 +123,6 @@ export default function IndoorTrackingSystem() {
   const accelRef = useRef({ lastZ: 9.81, threshold: 2.5 });
   const channelRef = useRef(null);
 
-  // Initialize Real-Time WebSockets via Supabase Broadcast
   useEffect(() => {
     const channel = supabase.channel("indoor_tracking_room", {
       config: { broadcast: { self: false } },
@@ -156,7 +150,6 @@ export default function IndoorTrackingSystem() {
     };
   }, [userId]);
 
-  // Transmit Telemetry over Supabase Realtime Channel
   const transmitLocation = (newPos, currentHeading) => {
     const { snapped, currentRoom } = mapMatchPoint(newPos);
     
@@ -180,7 +173,6 @@ export default function IndoorTrackingSystem() {
     }
   };
 
-  // Smartphone Hardware Sensor Initialization
   const startHardwareSensors = async () => {
     setDeviceRole("broadcaster");
 
@@ -192,7 +184,6 @@ export default function IndoorTrackingSystem() {
       }
     }
 
-    // Accelerometer Step Detection Peak Listener
     window.addEventListener("devicemotion", (e) => {
       const acc = e.accelerationIncludingGravity;
       if (!acc) return;
@@ -220,7 +211,6 @@ export default function IndoorTrackingSystem() {
       }
     });
 
-    // Gyroscope / Compass Listener
     window.addEventListener("deviceorientation", (e) => {
       if (e.alpha !== null) {
         const compassHeading = Math.round(e.alpha);
@@ -229,7 +219,6 @@ export default function IndoorTrackingSystem() {
     });
   };
 
-  // Cross-Platform Manual Walking Controls
   const handleManualWalk = (dir) => {
     const stepSize = 16;
     let dx = 0, dy = 0;
@@ -248,7 +237,6 @@ export default function IndoorTrackingSystem() {
 
   return (
     <div style={styles.container}>
-      {/* Top Navigation Header */}
       <div style={{ ...styles.card, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
         <div>
           <h1 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>Live Indoor Positioning System</h1>
@@ -265,7 +253,6 @@ export default function IndoorTrackingSystem() {
         </div>
       </div>
 
-      {/* Mode Selection Overlay */}
       {!deviceRole && (
         <div style={styles.card}>
           <h2 style={{ fontSize: "18px", marginTop: 0 }}>Select Device Mode for This Screen</h2>
@@ -283,7 +270,6 @@ export default function IndoorTrackingSystem() {
         </div>
       )}
 
-      {/* ACTIVE TRACKING & MAP INTERFACE */}
       {deviceRole && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "20px" }}>
           <div style={styles.card}>
@@ -292,7 +278,6 @@ export default function IndoorTrackingSystem() {
               <span style={{ fontSize: "12px", color: "#2dd4bf" }}>Your Device ID: <strong>{userId}</strong></span>
             </div>
 
-            {/* Interactive SVG Floor Plan */}
             <div style={{ backgroundColor: "#030712", borderRadius: "12px", padding: "10px", border: "1px solid #1f2937" }}>
               <svg viewBox="0 0 700 500" style={{ width: "100%", height: "auto", display: "block" }}>
                 <defs>
@@ -302,7 +287,6 @@ export default function IndoorTrackingSystem() {
                 </defs>
                 <rect width="100%" height="100%" fill="url(#grid)" />
 
-                {/* Rooms */}
                 {BUILDING_LAYOUT.rooms.map((room, i) => (
                   <g key={i}>
                     <rect
@@ -321,12 +305,10 @@ export default function IndoorTrackingSystem() {
                   </g>
                 ))}
 
-                {/* Corridor Spine Graph */}
                 <line x1="100" y1="150" x2="550" y2="150" stroke="#1f2937" strokeWidth="40" strokeLinecap="round" />
                 <line x1="550" y1="150" x2="550" y2="400" stroke="#1f2937" strokeWidth="40" strokeLinecap="round" />
                 <line x1="100" y1="150" x2="100" y2="400" stroke="#1f2937" strokeWidth="40" strokeLinecap="round" />
 
-                {/* REMOTE PEERS (Other Connected Phones in the Building) */}
                 {Object.values(peerDevices).map((peer) => (
                   <g key={peer.userId}>
                     <circle cx={peer.position[0]} cy={peer.position[1]} r="10" fill="#3b82f6" />
@@ -337,7 +319,6 @@ export default function IndoorTrackingSystem() {
                   </g>
                 ))}
 
-                {/* YOUR ACTIVE DEVICE MARKER */}
                 <g>
                   <circle cx={position[0]} cy={position[1]} r="10" fill="#0d9488" />
                   <circle cx={position[0]} cy={position[1]} r="24" fill="#0d9488" opacity="0.3" />
@@ -348,7 +329,6 @@ export default function IndoorTrackingSystem() {
               </svg>
             </div>
 
-            {/* Direction Navigation Walk Panel */}
             <div style={{ marginTop: "16px" }}>
               <span style={{ fontSize: "12px", color: "#9ca3af", display: "block", marginBottom: "8px" }}>
                 Walk Controls (Use on Mobile or Laptop to test room-to-room movement):
@@ -362,7 +342,6 @@ export default function IndoorTrackingSystem() {
             </div>
           </div>
 
-          {/* Telemetry Status Cards */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "12px" }}>
             <div style={styles.statBox}>
               <span style={{ fontSize: "11px", color: "#9ca3af" }}>YOUR CURRENT ROOM</span>
@@ -371,12 +350,12 @@ export default function IndoorTrackingSystem() {
               </div>
             </div>
 
-            <div style={styles.statBox}>
-              <span style={{ fontSize: "11px", color: "#9ca3af" }}>CONNECTED PEERS</span>
-              <div style={{ fontSize: "16px", fontWeight: "700", color: "#60a5fa", marginTop: "4px" }}>
-                {Object.keys(peerDevices).length} Active Devices
-              </div>
-            </div>
+           <div style={styles.statBox}>
+  <span style={{ fontSize: "11px", color: "#9ca3af" }}>CONNECTED PEERS</span>
+  <div style={{ fontSize: "16px", fontWeight: "700", color: "#60a5fa", marginTop: "4px" }}>
+    {Object.keys(peerDevices).length} Active Devices
+  </div>
+</div>
 
             <div style={styles.statBox}>
               <span style={{ fontSize: "11px", color: "#9ca3af" }}>STEPS & COMPASS</span>
